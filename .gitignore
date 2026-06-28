@@ -2,3 +2,4 @@ plan.pdf
 .env
 orig_data/
 .venv/
+backups/
