@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import time
 
 import pandas as pd
@@ -32,11 +33,19 @@ TRIP_COLUMNS = [
     "payment_type",
 ]
 
+# Representative queries for the pickup_datetime / total_amount indexes,
+# benchmarked once before the indexes exist and once after.
+BENCHMARK_QUERIES = {
+    "pickup_datetime_range": "SELECT count(*) FROM trips WHERE pickup_datetime BETWEEN '2026-04-15' AND '2026-04-16'",
+    "total_amount_threshold": "SELECT count(*) FROM trips WHERE total_amount > 100",
+}
+
 
 def load_and_clean(path):
     df = pd.read_parquet(path)
     rows_read = len(df)
 
+    # rename columns from file and drop unused attributes
     df = df.rename(columns={
         "VendorID": "vendor_id",
         "tpep_pickup_datetime": "pickup_datetime",
@@ -51,13 +60,13 @@ def load_and_clean(path):
     month_start = df["pickup_datetime"].dt.to_period("M").mode()[0].start_time
     month_end = month_start + pd.offsets.MonthBegin(1)
 
+    # dropping rows that don't meet this criteria
     valid = (
         df["pickup_datetime"].notna()
         & (df["fare_amount"] >= 0)
         & (df["total_amount"] >= 0)
         # passenger_count is null for legitimate Flex Fare trips (payment_type
-        # 0) - keep nulls; 0 is a contradiction (a fare implies a rider), but
-        # there's no real ceiling to enforce, so don't drop large values.
+        # 0) - keep nulls; 0 is a contradiction (a fare implies a rider)
         & (df["passenger_count"].isna() | (df["passenger_count"] >= 1))
         & (df["dropoff_datetime"] >= df["pickup_datetime"])
         & (df["pickup_datetime"] >= month_start)
@@ -88,14 +97,46 @@ def bulk_insert(conn, df):
     conn.commit()
     return time.perf_counter() - start
 
-
-def add_indexes(conn):
+def analyze_table(conn):
     with conn.cursor() as cur:
         cur.execute("ANALYZE trips;")
+    conn.commit()
+
+
+# adding indexes for pickup time and total fare for faster querying
+def create_indexes(conn):
+    with conn.cursor() as cur:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_trips_pickup_datetime ON trips (pickup_datetime);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_trips_total_amount ON trips (total_amount);")
-        cur.execute("ANALYZE trips;")
     conn.commit()
+
+
+def explain_query(conn, sql):
+    with conn.cursor() as cur:
+        cur.execute("EXPLAIN ANALYZE " + sql)
+        plan_text = "\n".join(row[0] for row in cur.fetchall())
+
+    execution_time_ms = float(re.search(r"Execution Time: ([\d.]+) ms", plan_text).group(1))
+    scan_type = "Index Scan" if "Index Scan" in plan_text else "Seq Scan"
+    return execution_time_ms, scan_type, plan_text
+
+
+def benchmark_queries(conn, phase):
+    results = []
+    with conn.cursor() as cur:
+        for label, sql in BENCHMARK_QUERIES.items():
+            execution_time_ms, scan_type, plan_text = explain_query(conn, sql)
+            print(f"--- {label} ({phase}) ---\n{plan_text}\n")
+            cur.execute(
+                """
+                INSERT INTO index_benchmark (query_label, phase, scan_type, execution_time_ms)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (label, phase, scan_type, execution_time_ms),
+            )
+            results.append((label, scan_type, execution_time_ms))
+    conn.commit()
+    return results
 
 
 def log_run(conn, source_file, rows_loaded, rows_rejected, copy_duration, duration_seconds):
@@ -117,12 +158,22 @@ def main():
     rows_rejected = rows_read - rows_clean
     clean_duration = time.perf_counter() - start
 
-    conn = psycopg2.connect(**DB_CONFIG)
+    conn = psycopg2.connect(**DB_CONFIG) # connect to DB
     try:
         copy_duration = bulk_insert(conn, df)
+
+        # Stats need to be fresh before benchmarking "before" too, so the
+        # only variable between before/after is the index itself.
+        analyze_table(conn)
+        before = benchmark_queries(conn, "before")
+
         index_start = time.perf_counter()
-        add_indexes(conn)
+        create_indexes(conn)
+        analyze_table(conn)
         index_duration = time.perf_counter() - index_start
+
+        after = benchmark_queries(conn, "after")
+
         duration = time.perf_counter() - start
         log_run(conn, PARQUET_FILE, rows_clean, rows_rejected, copy_duration, duration)
     finally:
@@ -133,6 +184,8 @@ def main():
         f"clean={clean_duration:.2f}s copy={copy_duration:.2f}s "
         f"index={index_duration:.2f}s total={duration:.2f}s"
     )
+    for (label, scan_type, ms), (_, after_scan_type, after_ms) in zip(before, after):
+        print(f"{label}: before={scan_type} {ms:.2f}ms  after={after_scan_type} {after_ms:.2f}ms")
 
 
 if __name__ == "__main__":
