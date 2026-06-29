@@ -106,22 +106,24 @@ Verified directly: with the rotation threshold temporarily lowered, an over-thre
 
 ### Scheduling
 
-The plan calls for scheduling these via Linux `cron`, which isn't available on native Windows (this project is developed on Windows + Docker Desktop). The intended crontab entries, for a Linux host or deployment target:
+Native Windows has no `cron`, so scheduling runs in a dedicated `scheduler` container instead ([scheduler/Dockerfile](scheduler/Dockerfile), [scheduler/crontab](scheduler/crontab)). It's a small sidecar, separate from the database container, whose only job is running `cron` and triggering the existing, unmodified `backup.sh`/`restore.sh` on a real schedule:
 
 ```
 # Daily backup at 2am
-0 2 * * * /path/to/DBOps-Toolkit/scripts/backup.sh
+0 2 * * * root /app/scripts/backup.sh >> /app/logs/cron.log 2>&1
 
 # Weekly summary every Sunday at 9am - last 20 lines of the backup log
-0 9 * * 0 tail -n 20 /path/to/DBOps-Toolkit/logs/backup.log >> /path/to/DBOps-Toolkit/logs/weekly_summary.log
+0 9 * * 0 root tail -n 20 /app/logs/backup.log >> /app/logs/weekly_summary.log 2>&1
 ```
 
-On this Windows dev machine, the closest equivalent is Windows Task Scheduler running the same script via Git Bash. This isn't implemented here, since the project's actual deployment target (and the skill the posting calls out) is Linux `cron`.
+This works identically on any host (Windows, Mac, Linux) since `cron` runs inside the container, not on the host OS. The sidecar mounts the host's Docker socket and the project directory, so it can `docker exec` into `taxidb-postgres` exactly like a person running `backup.sh` manually would, and any backups/logs it produces land in the real `backups/`/`logs/` directories on the host, not trapped inside the container. Verified directly: manually triggered `backup.sh` and `restore.sh` through the sidecar (`docker exec taxidb-scheduler /app/scripts/backup.sh`), confirmed the resulting `.dump` file appeared on the host filesystem, and confirmed `crontab -l` inside the container shows the real schedule loaded and ready to fire on its own.
 
 ### Auditability
 
-Every run of `load_data.py` records its own row counts, rejection counts, and timing breakdown (cleaning, `COPY`, indexing) to a `load_log` table, giving a persistent, queryable history of every load rather than relying on console output or memory.
+Every run of `load_data.py` records its own row counts, rejection counts, and timing breakdown to a `load_log` table, giving a persistent, queryable history of every load rather than relying on console output or memory.
 
 ## What Can Be Improved
 
 - **Backup retention: Grandfather-Father-Son (GFS) tiering.** `backup.sh` currently uses a flat 7-day retention window. Real backup tooling typically uses GFS rotation instead: daily backups kept for a week, one weekly backup kept for a month, one monthly backup kept for a year, so long-term recoverability doesn't require keeping every daily snapshot forever. This wasn't implemented here because it solves a storage-growth problem that doesn't really exist at this project's scale, but it's the natural next step if this database were holding production-scale, long-lived data.
+
+- **Scheduled backups depend on the machine being on.** The `scheduler` container's `cron` job only fires if the container, Docker Desktop, and the physical machine are all running at 2am. This is correct behavior for an always-on production server, which is what the schedule is modeling, but on a personal dev machine that sleeps or shuts down overnight, that night's backup is simply skipped, since standard `cron` doesn't retroactively run missed jobs. A production deployment on an always-on host wouldn't have this gap; mitigations for a personal machine would include also running a backup on container startup, or configuring Windows to wake the machine for scheduled tasks.

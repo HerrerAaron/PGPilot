@@ -1,0 +1,6 @@
+.git
+.venv
+orig_data
+backups
+logs
+__pycache__
