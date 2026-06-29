@@ -1,4 +1,4 @@
-# DBOps-Toolkit
+# PGPilot
 
 ## Getting Started: Running the Database
 
