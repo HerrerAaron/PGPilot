@@ -15,3 +15,6 @@
 [2026-06-29 02:59:44] Cleaned up backups older than 7 days
 [2026-06-29 03:00:43] Starting restore of taxidb from /app/backups/taxidb_20260629_025928.dump...
 [2026-06-29 03:01:03] Restore complete from /app/backups/taxidb_20260629_025928.dump
+[2026-06-29 10:51:26] Starting backup of taxidb...
+[2026-06-29 10:51:42] Backup complete: ./backups/taxidb_20260629_105125.dump (72M)
+[2026-06-29 10:51:42] Cleaned up backups older than 7 days

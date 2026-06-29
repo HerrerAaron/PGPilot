@@ -1,3 +1,5 @@
+name: pgpilot
+
 services:
   postgres:
     image: postgres:16 # use pg version 16
