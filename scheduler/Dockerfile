@@ -18,8 +18,7 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.
     && rm /tmp/docker.tgz
 
 COPY scheduler/crontab /etc/cron.d/backup-cron
-RUN chmod 0644 /etc/cron.d/backup-cron \
-    && crontab /etc/cron.d/backup-cron
+RUN chmod 0644 /etc/cron.d/backup-cron
 
 # Run cron in the foreground so it's the container's main (PID 1) process.
 CMD ["cron", "-f"]

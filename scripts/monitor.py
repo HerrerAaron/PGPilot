@@ -8,9 +8,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+POSTGRES_PORT = 5432
+
 DB_CONFIG = {
+    # localhost when run from the host; docker-compose sets DB_HOST=postgres for the scheduler container
     "host": os.environ.get("DB_HOST", "localhost"),
-    "port": 5432,
+    "port": POSTGRES_PORT,
     "dbname": os.environ["DB_NAME"],
     "user": os.environ["DB_USER"],
     "password": os.environ["DB_PASSWORD"],
@@ -18,30 +21,40 @@ DB_CONFIG = {
 
 ALERT_EMAIL = os.environ.get("ALERT_EMAIL")
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
+SMTP_TLS_PORT = 587
+SMTP_PORT = int(os.environ.get("SMTP_PORT", SMTP_TLS_PORT))
 SMTP_USER = os.environ.get("SMTP_USER")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
 
-# Query the database and return a dict of health metrics
+# These constants are arbitrary values and would depend on things like 
+# resource availability and what operations you are running.
+CRITICAL_DB_SIZE_MB  = 2000
+CRITICAL_CONNECTIONS = 90
+CRITICAL_QUERY_SEC   = 60
+CRITICAL_BLOAT_PCT   = 50
+
+WARNING_DB_SIZE_MB   = 1000
+WARNING_CONNECTIONS  = 50
+WARNING_QUERY_SEC    = 30
+WARNING_BLOAT_PCT    = 20
+
 def collect_metrics(conn):
     metrics = {}
     with conn.cursor() as cur:
-        # DB size
-        cur.execute("SELECT round(pg_database_size(current_database()) / 1024.0 / 1024.0, 2)") # convert from bytes to MB
+        cur.execute("SELECT round(pg_database_size(current_database()) / 1024.0 / 1024.0, 2)")
         metrics["db_size_mb"] = cur.fetchone()[0]
 
-        # active connections
         cur.execute("SELECT count(*) FROM pg_stat_activity WHERE state = 'active'")
         metrics["active_connections"] = cur.fetchone()[0]
 
-        # longest query
+        # coalesce returns 0 when no queries are currently active
         cur.execute(
             "SELECT coalesce(round(extract(epoch from max(now() - query_start))::numeric, 2), 0)"
             " FROM pg_stat_activity WHERE state = 'active' AND query_start IS NOT NULL"
         )
         metrics["longest_query_sec"] = cur.fetchone()[0]
 
-        # table bloat percentage
+        # dead tuples are rows deleted/updated but not yet reclaimed by VACUUM
         cur.execute(
             "SELECT coalesce(round(100.0 * sum(n_dead_tup) / nullif(sum(n_live_tup + n_dead_tup), 0), 2), 0)"
             " FROM pg_stat_user_tables"
@@ -50,20 +63,20 @@ def collect_metrics(conn):
 
     return metrics
 
-# Return "ok", "warning", or "critical" based on metric threshold
+
 def evaluate_status(metrics):
     if (
-        metrics["db_size_mb"] > 2000
-        or metrics["active_connections"] > 90
-        or metrics["longest_query_sec"] > 60
-        or metrics["table_bloat_pct"] > 50
+        metrics["db_size_mb"] > CRITICAL_DB_SIZE_MB
+        or metrics["active_connections"] > CRITICAL_CONNECTIONS
+        or metrics["longest_query_sec"] > CRITICAL_QUERY_SEC
+        or metrics["table_bloat_pct"] > CRITICAL_BLOAT_PCT
     ):
         return "critical"
     if (
-        metrics["db_size_mb"] > 500
-        or metrics["active_connections"] > 50
-        or metrics["longest_query_sec"] > 30
-        or metrics["table_bloat_pct"] > 20
+        metrics["db_size_mb"] > WARNING_DB_SIZE_MB
+        or metrics["active_connections"] > WARNING_CONNECTIONS
+        or metrics["longest_query_sec"] > WARNING_QUERY_SEC
+        or metrics["table_bloat_pct"] > WARNING_BLOAT_PCT
     ):
         return "warning"
     return "ok"

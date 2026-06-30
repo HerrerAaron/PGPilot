@@ -9,9 +9,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+POSTGRES_PORT = 5432
+
 DB_CONFIG = {
     "host": "localhost",
-    "port": 5432,
+    "port": POSTGRES_PORT,
     "dbname": os.environ["DB_NAME"],
     "user": os.environ["DB_USER"],
     "password": os.environ["DB_PASSWORD"],
@@ -45,7 +47,6 @@ def load_and_clean(path):
     df = pd.read_parquet(path)
     rows_read = len(df)
 
-    # rename columns from file and drop unused attributes
     df = df.rename(columns={
         "VendorID": "vendor_id",
         "tpep_pickup_datetime": "pickup_datetime",
@@ -57,10 +58,10 @@ def load_and_clean(path):
 
     # Restrict to the calendar month the file is actually for, dropping the
     # handful of mis-keyed timestamps (e.g. years off) seen in this dataset.
+    # derive the file's month from the most common pickup month, then compute its bounds
     month_start = df["pickup_datetime"].dt.to_period("M").mode()[0].start_time
     month_end = month_start + pd.offsets.MonthBegin(1)
 
-    # dropping rows that don't meet this criteria
     valid = (
         df["pickup_datetime"].notna()
         & (df["fare_amount"] >= 0)
@@ -103,7 +104,6 @@ def analyze_table(conn):
     conn.commit()
 
 
-# adding indexes for pickup time and total fare for faster querying
 def create_indexes(conn):
     with conn.cursor() as cur:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_trips_pickup_datetime ON trips (pickup_datetime);")
@@ -158,7 +158,7 @@ def main():
     rows_rejected = rows_read - rows_clean
     clean_duration = time.perf_counter() - start
 
-    conn = psycopg2.connect(**DB_CONFIG) # connect to DB
+    conn = psycopg2.connect(**DB_CONFIG)
     try:
         copy_duration = bulk_insert(conn, df)
 
