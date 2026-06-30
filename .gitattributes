@@ -1,0 +1,2 @@
+*.sh text eol=lf
+scheduler/crontab text eol=lf

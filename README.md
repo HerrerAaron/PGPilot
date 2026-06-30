@@ -1,6 +1,6 @@
-# DBOps-Toolkit
+# PGPilot
 
-## Getting Started — Running the Database
+## Getting Started: Running the Database
 
 This project runs PostgreSQL 16 inside Docker, with schema initialization handled automatically on first start.
 
@@ -43,7 +43,7 @@ Several rows in the dataset were dropped due to containing logical errors that d
 | Rule | Reasoning |
 |---|---|
 | `fare_amount < 0` / `total_amount < 0` | A fare cannot be negative |
-| `passenger_count = 0` | A completed fare implies at least one rider (nulls are kept — they're a real, documented "Flex Fare" trip type with no metered passenger count, not bad data) |
+| `passenger_count = 0` | A completed fare implies at least one rider. Nulls are kept since they represent a real, documented "Flex Fare" trip type with no metered passenger count, not bad data. |
 | `dropoff_datetime < pickup_datetime` | A trip cannot end before it starts |
 | pickup outside the file's month | Catches a handful of mis-keyed dates (e.g. timestamps decades off) |
 | null pickup/dropoff zone | Required to satisfy the FK into the `zones` lookup table |
@@ -63,8 +63,60 @@ Indexes on `pickup_datetime` and `total_amount` are added **after** the bulk loa
 | 1-day `pickup_datetime` range | 152.70 ms | 27.96 ms | **5.5x** |
 | `total_amount > 100` | 235.79 ms | 183.76 ms | **1.3x** |
 
-The two indexes deliver very different speedups despite similarly selective queries — `pg_stats.correlation` explains why: `pickup_datetime` is `0.68` (rows were loaded in roughly chronological order, so matching rows sit on a small number of adjacent disk pages) versus `0.15` for `total_amount` (high-fare trips are scattered randomly across the table, so even a precise index still has to fetch from thousands of scattered pages). An index's payoff depends on how well the indexed column correlates with the table's physical row order, not just on how selective the query is.
+The two indexes deliver very different speedups despite similarly selective queries. `pg_stats.correlation` explains why: `pickup_datetime` is `0.68` (rows were loaded in roughly chronological order, so matching rows sit on a small number of adjacent disk pages) versus `0.15` for `total_amount` (high-fare trips are scattered randomly across the table, so even a precise index still has to fetch from thousands of scattered pages). An index's payoff depends on how well the indexed column correlates with the table's physical row order, not just on how selective the query is.
+
+## Backup & Recovery
+
+[scripts/backup.sh](scripts/backup.sh) and [scripts/restore.sh](scripts/restore.sh) handle backing up and recovering the database via `pg_dump`/`pg_restore`, run through `docker exec` rather than requiring Postgres client tools installed on the host.
+
+**Manual backup:**
+
+```
+./scripts/backup.sh
+```
+
+This dumps the database to a timestamped, compressed file in `backups/` (e.g. `taxidb_20260627_194658.dump`, ~72MB for the full ~3.8M-row dataset), logs the run to `logs/backup.log`, and deletes any `.dump` file older than 7 days.
+
+**Manual restore:**
+
+```
+./scripts/restore.sh ./backups/taxidb_20260627_194658.dump
+```
+
+`restore.sh` uses `pg_restore --clean --if-exists`, so it safely drops and recreates only the objects present in the dump before reloading data. This includes any tables, indexes, or foreign keys that may have been dropped or modified since the backup was taken.
+
+### Verified restore test
+
+Tested end-to-end: dropped the `vendors` table entirely (cascading its foreign key into `trips`), then ran `restore.sh` against a prior backup. Both the table and the FK constraint were recreated automatically, and row counts matched exactly.
+
+### Backup rotation
+
+`.dump` files older than 7 days are deleted automatically on each `backup.sh` run via `find ... -mtime +7 -delete`. Recent backups are never touched.
+
+### Log rotation
+
+Backup rotation (pruning old `.dump` files) and log rotation (managing `backup.log` growth) are handled separately. Once `backup.log` exceeds 1MB, it's archived to a timestamped `.old` file and a fresh log starts. Archived logs older than 30 days are pruned on the next run.
+
+### Scheduling
+
+Native Windows has no `cron`, so scheduling runs in a dedicated `scheduler` container instead ([scheduler/Dockerfile](scheduler/Dockerfile), [scheduler/crontab](scheduler/crontab)). It's a small sidecar, separate from the database container, whose only job is running `cron` and triggering the existing, unmodified `backup.sh`/`restore.sh` on a real schedule:
+
+```
+# Daily backup at 2am
+0 2 * * * root /app/scripts/backup.sh >> /app/logs/cron.log 2>&1
+
+# Weekly summary every Sunday at 9am - last 20 lines of the backup log
+0 9 * * 0 root tail -n 20 /app/logs/backup.log >> /app/logs/weekly_summary.log 2>&1
+```
+
+This works identically on any host (Windows, Mac, Linux) since `cron` runs inside the container, not on the host OS. The sidecar mounts the host's Docker socket and the project directory, so it can `docker exec` into `taxidb-postgres` exactly like a person running `backup.sh` manually would, and any backups/logs it produces land in the real `backups/`/`logs/` directories on the host, not trapped inside the container. Verified directly: manually triggered `backup.sh` and `restore.sh` through the sidecar (`docker exec taxidb-scheduler /app/scripts/backup.sh`), confirmed the resulting `.dump` file appeared on the host filesystem, and confirmed `crontab -l` inside the container shows the real schedule loaded and ready to fire on its own.
 
 ### Auditability
 
-Every run of `load_data.py` records its own row counts, rejection counts, and timing breakdown (cleaning, `COPY`, indexing) to a `load_log` table — giving a persistent, queryable history of every load rather than relying on console output or memory.
+Every run of `load_data.py` records its own row counts, rejection counts, and timing breakdown to a `load_log` table, giving a persistent, queryable history of every load rather than relying on console output or memory.
+
+## What Can Be Improved
+
+- **Backup retention: Grandfather-Father-Son (GFS) tiering.** `backup.sh` currently uses a flat 7-day retention window. Real backup tooling typically uses GFS rotation instead: daily backups kept for a week, one weekly backup kept for a month, one monthly backup kept for a year, so long-term recoverability doesn't require keeping every daily snapshot forever. This wasn't implemented here because it solves a storage-growth problem that doesn't really exist at this project's scale, but it's the natural next step if this database were holding production-scale, long-lived data.
+
+- **Scheduled backups depend on the machine being on.** The `scheduler` container's `cron` job only fires if the container, Docker Desktop, and the physical machine are all running at 2am. This is correct behavior for an always-on production server, which is what the schedule is modeling, but on a personal dev machine that sleeps or shuts down overnight, that night's backup is simply skipped, since standard `cron` doesn't retroactively run missed jobs. A production deployment on an always-on host wouldn't have this gap; mitigations for a personal machine would include also running a backup on container startup, or configuring Windows to wake the machine for scheduled tasks.

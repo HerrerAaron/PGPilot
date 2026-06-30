@@ -1,3 +1,5 @@
+name: pgpilot
+
 services:
   postgres:
     image: postgres:16 # use pg version 16
@@ -17,6 +19,24 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: scheduler/Dockerfile
+    container_name: taxidb-scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/app
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep cron || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
   pgdata:
