@@ -140,6 +140,9 @@ python scripts/monitor.py --dry-run
 | `longest_query_sec` | A query running longer than expected is usually blocking others or missing an index |
 | `table_bloat_pct` | Dead rows accumulate until VACUUM reclaims them; high bloat degrades query performance |
 
+![db_metrics table](images/metrics_table.png)
+*Monitoring results stored in the db_metrics table.*
+
 ### Persistent history
 
 Every run inserts a row into `db_metrics` regardless of status, giving a queryable record of database health over time. This makes it possible to spot gradual trends that a single snapshot wouldn't reveal.
@@ -147,6 +150,9 @@ Every run inserts a row into `db_metrics` regardless of status, giving a queryab
 ### Alerting
 
 When any metric crosses a threshold, an email is sent via SMTP with the metric values and status level. Thresholds are defined as named constants at the top of [scripts/monitor.py](scripts/monitor.py) and can be tuned to match the environment's normal baseline. `--dry-run` prints the alert body to the terminal instead of sending, making it safe to test without live email credentials.
+
+![critical_warning_alert](images/email_critical_warning.png)
+*Alert for critical result.*
 
 ### Scheduling
 
