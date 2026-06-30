@@ -26,18 +26,22 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
 def collect_metrics(conn):
     metrics = {}
     with conn.cursor() as cur:
-        cur.execute("SELECT round(pg_database_size(current_database()) / 1024.0 / 1024.0, 2)")
+        # DB size
+        cur.execute("SELECT round(pg_database_size(current_database()) / 1024.0 / 1024.0, 2)") # convert from bytes to MB
         metrics["db_size_mb"] = cur.fetchone()[0]
 
+        # active connections
         cur.execute("SELECT count(*) FROM pg_stat_activity WHERE state = 'active'")
         metrics["active_connections"] = cur.fetchone()[0]
 
+        # longest query
         cur.execute(
             "SELECT coalesce(round(extract(epoch from max(now() - query_start))::numeric, 2), 0)"
             " FROM pg_stat_activity WHERE state = 'active' AND query_start IS NOT NULL"
         )
         metrics["longest_query_sec"] = cur.fetchone()[0]
 
+        # table bloat percentage
         cur.execute(
             "SELECT coalesce(round(100.0 * sum(n_dead_tup) / nullif(sum(n_live_tup + n_dead_tup), 0), 2), 0)"
             " FROM pg_stat_user_tables"
