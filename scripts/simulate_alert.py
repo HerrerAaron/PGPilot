@@ -42,8 +42,12 @@ def main():
     time.sleep(MONITOR_TRIGGER_SEC)
 
     print("\nRunning monitor.py:\n")
-    # subprocess.run([sys.executable, "scripts/monitor.py", "--dry-run"]) # dry-run
-    subprocess.run([sys.executable, "scripts/monitor.py"]) # send to email
+    
+    # dry-run
+    # subprocess.run([sys.executable, "scripts/monitor.py", "--dry-run"]) 
+    
+    # send to email
+    subprocess.run([sys.executable, "scripts/monitor.py"]) 
 
     print("\nSimulation complete. Background query terminates on script exit.")
 
