@@ -87,22 +87,15 @@ This dumps the database to a timestamped, compressed file in `backups/` (e.g. `t
 
 ### Verified restore test
 
-A backup script that's never had its restore path actually exercised is a common gap. This one was tested end-to-end, not just assumed to work:
-
-1. Took a backup with the full dataset in place (3,804,655 rows in `trips`, 4 rows in `vendors`).
-2. Dropped the `vendors` table entirely (`DROP TABLE vendors CASCADE`), which cascaded into removing the `trips_vendor_id_fkey` foreign key constraint as well.
-3. Ran `restore.sh` against the prior backup.
-4. Confirmed: `vendors` reappeared with all 4 rows, `trips_vendor_id_fkey` was recreated automatically, and `trips` still held exactly 3,804,655 rows throughout. The table that wasn't touched was never at risk, and the table that was dropped came back complete.
+Tested end-to-end: dropped the `vendors` table entirely (cascading its foreign key into `trips`), then ran `restore.sh` against a prior backup. Both the table and the FK constraint were recreated automatically, and row counts matched exactly.
 
 ### Backup rotation
 
-Verified directly: an 8-day-old dummy `.dump` file was deleted by the next `backup.sh` run, while two genuinely recent backups (minutes apart) were both retained. This confirms the `find ... -mtime +$BACKUP_RETAIN_DAYS -delete` rule only removes backups past the retention window, not recent ones.
+`.dump` files older than 7 days are deleted automatically on each `backup.sh` run via `find ... -mtime +7 -delete`. Recent backups are never touched.
 
 ### Log rotation
 
-Backup rotation and log rotation are different things: the former prunes old `.dump` files, the latter manages the growth of `logs/backup.log` itself. Both `backup.sh` and `restore.sh` call a `rotate_log()` step before writing anything: once `backup.log` exceeds 1MB, it's archived to a timestamped `backup.log.<timestamp>.old` file and a fresh log starts; archived logs older than 30 days are then pruned the same way old backups are.
-
-Verified directly: with the rotation threshold temporarily lowered, an over-threshold log file was archived correctly, and a 31-day-old archived copy was pruned on the next run while a freshly-written log was left untouched.
+Backup rotation (pruning old `.dump` files) and log rotation (managing `backup.log` growth) are handled separately. Once `backup.log` exceeds 1MB, it's archived to a timestamped `.old` file and a fresh log starts. Archived logs older than 30 days are pruned on the next run.
 
 ### Scheduling
 
