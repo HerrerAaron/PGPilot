@@ -2,8 +2,10 @@ FROM postgres:16
 
 # cron: runs our backup/restore schedule.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends cron ca-certificates curl \
+    && apt-get install -y --no-install-recommends cron ca-certificates curl python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir --break-system-packages psycopg2-binary python-dotenv
 
 # Install just the `docker` CLI client binary,
 # so we can `docker exec` into the database container over the host's

@@ -29,6 +29,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    environment:
+      - DB_HOST=postgres
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - .:/app

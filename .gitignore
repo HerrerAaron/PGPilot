@@ -3,3 +3,6 @@ plan.pdf
 orig_data/
 .venv/
 backups/
+logs/cron.log
+logs/weekly_summary.log
+logs/monitor.log
