@@ -115,8 +115,47 @@ This works identically on any host (Windows, Mac, Linux) since `cron` runs insid
 
 Every run of `load_data.py` records its own row counts, rejection counts, and timing breakdown to a `load_log` table, giving a persistent, queryable history of every load rather than relying on console output or memory.
 
+## Health Monitoring & Alerting
+
+[scripts/monitor.py](scripts/monitor.py) polls the database every 15 minutes via the `scheduler` sidecar, collects four health metrics from Postgres's built-in system views, and sends an email alert if any metric crosses a warning or critical threshold.
+
+**Manual run:**
+
+```
+python scripts/monitor.py
+```
+
+Use `--dry-run` to verify the full pipeline without sending email:
+
+```
+python scripts/monitor.py --dry-run
+```
+
+### What is monitored
+
+| Metric | Why it matters |
+|---|---|
+| `db_size_mb` | Catches runaway data growth before it fills the disk |
+| `active_connections` | Postgres has a hard connection cap; exhausting it refuses all new connections |
+| `longest_query_sec` | A query running longer than expected is usually blocking others or missing an index |
+| `table_bloat_pct` | Dead rows accumulate until VACUUM reclaims them; high bloat degrades query performance |
+
+### Persistent history
+
+Every run inserts a row into `db_metrics` regardless of status, giving a queryable record of database health over time. This makes it possible to spot gradual trends that a single snapshot wouldn't reveal.
+
+### Alerting
+
+When any metric crosses a threshold, an email is sent via SMTP with the metric values and status level. Thresholds are defined as named constants at the top of [scripts/monitor.py](scripts/monitor.py) and can be tuned to match the environment's normal baseline. `--dry-run` prints the alert body to the terminal instead of sending, making it safe to test without live email credentials.
+
+### Scheduling
+
+The monitor runs every 15 minutes via the existing `scheduler` sidecar alongside the backup jobs. No additional infrastructure is needed. Output from each automated run is appended to `logs/monitor.log`.
+
 ## What Can Be Improved
 
 - **Backup retention: Grandfather-Father-Son (GFS) tiering.** `backup.sh` currently uses a flat 7-day retention window. Real backup tooling typically uses GFS rotation instead: daily backups kept for a week, one weekly backup kept for a month, one monthly backup kept for a year, so long-term recoverability doesn't require keeping every daily snapshot forever. This wasn't implemented here because it solves a storage-growth problem that doesn't really exist at this project's scale, but it's the natural next step if this database were holding production-scale, long-lived data.
+
+- **Polling-based monitoring has a blind spot.** `monitor.py` captures a snapshot at the moment it runs — an incident that starts and resolves between two 15-minute checks goes completely undetected. In production this is addressed by shortening the interval (Prometheus scrapes every 15–30 seconds) or replacing polling with event-driven alerting entirely. At this project's scale the trade-off is acceptable, but it's worth understanding the gap.
 
 - **Scheduled backups depend on the machine being on.** The `scheduler` container's `cron` job only fires if the container, Docker Desktop, and the physical machine are all running at 2am. This is correct behavior for an always-on production server, which is what the schedule is modeling, but on a personal dev machine that sleeps or shuts down overnight, that night's backup is simply skipped, since standard `cron` doesn't retroactively run missed jobs. A production deployment on an always-on host wouldn't have this gap; mitigations for a personal machine would include also running a backup on container startup, or configuring Windows to wake the machine for scheduled tasks.
