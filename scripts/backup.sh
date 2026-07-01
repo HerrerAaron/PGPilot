@@ -4,9 +4,10 @@ set -euo pipefail
 # Run from the project root regardless of where this script is invoked from.
 cd "$(dirname "$0")/.."
 
-set -a
-source .env
-set +a
+# In CI, credentials come from the environment directly; .env is not committed.
+if [ -f .env ]; then
+    set -a; source .env; set +a
+fi
 
 CONTAINER_NAME="taxidb-postgres"
 BACKUP_DIR="./backups"
@@ -33,7 +34,12 @@ rotate_log() {
 rotate_log
 
 log "Starting backup of $DB_NAME..."
-docker exec "$CONTAINER_NAME" pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc > "$BACKUP_FILE"
+# GitHub Actions sets CI=true; run pg_dump directly since there is no Docker socket.
+if [ "${CI:-}" = "true" ]; then
+    PGPASSWORD="$DB_PASSWORD" pg_dump -h "${DB_HOST:-localhost}" -U "$DB_USER" -d "$DB_NAME" -Fc > "$BACKUP_FILE"
+else
+    docker exec "$CONTAINER_NAME" pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc > "$BACKUP_FILE"
+fi
 log "Backup complete: $BACKUP_FILE ($(du -sh "$BACKUP_FILE" | cut -f1))"
 
 # Backup rotation: delete .dump files older than BACKUP_RETAIN_DAYS.

@@ -49,7 +49,7 @@ def collect_metrics(conn):
 
         # coalesce returns 0 when no queries are currently active
         cur.execute(
-            "SELECT coalesce(round(extract(epoch from max(now() - query_start))::numeric, 2), 0)"
+            "SELECT coalesce(greatest(round(extract(epoch from max(now() - query_start))::numeric, 2), 0), 0)"
             " FROM pg_stat_activity WHERE state = 'active' AND query_start IS NOT NULL"
         )
         metrics["longest_query_sec"] = cur.fetchone()[0]

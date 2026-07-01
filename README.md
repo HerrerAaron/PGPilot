@@ -1,5 +1,7 @@
 # PGPilot
 
+![CI](https://github.com/HerrerAaron/PGPilot/actions/workflows/ci.yml/badge.svg)
+
 ## Getting Started: Running the Database
 
 This project runs PostgreSQL 16 inside Docker, with schema initialization handled automatically on first start.
@@ -140,6 +142,9 @@ python scripts/monitor.py --dry-run
 | `longest_query_sec` | A query running longer than expected is usually blocking others or missing an index |
 | `table_bloat_pct` | Dead rows accumulate until VACUUM reclaims them; high bloat degrades query performance |
 
+![db_metrics table](images/metrics_table.png)
+*Monitoring results stored in the db_metrics table.*
+
 ### Persistent history
 
 Every run inserts a row into `db_metrics` regardless of status, giving a queryable record of database health over time. This makes it possible to spot gradual trends that a single snapshot wouldn't reveal.
@@ -148,9 +153,32 @@ Every run inserts a row into `db_metrics` regardless of status, giving a queryab
 
 When any metric crosses a threshold, an email is sent via SMTP with the metric values and status level. Thresholds are defined as named constants at the top of [scripts/monitor.py](scripts/monitor.py) and can be tuned to match the environment's normal baseline. `--dry-run` prints the alert body to the terminal instead of sending, making it safe to test without live email credentials.
 
+![critical_warning_alert](images/email_critical_warning.png)
+*Alert for critical result.*
+
 ### Scheduling
 
 The monitor runs every 15 minutes via the existing `scheduler` sidecar alongside the backup jobs. No additional infrastructure is needed. Output from each automated run is appended to `logs/monitor.log`.
+
+## CI/CD
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push and pull request. It spins up a real Postgres 16 instance, applies every schema migration from `init/`, loads 1,000 synthetic rows, runs the health monitor in dry-run mode, and exercises the backup path — all in a clean environment with no local state.
+
+### Why this matters
+
+In a DevOps role, you can't rely on manual testing for database changes. A schema migration that looks fine locally might break against a fresh database if an init script runs in the wrong order, or a script that works on your machine might silently assume a file that isn't committed. CI catches both of these automatically on every push, before any issue reaches a teammate or a deployment.
+
+### Synthetic data for CI
+
+The original dataset is a 600MB parquet file that lives in `orig_data/` and is gitignored. CI can't use it. Instead, `load_data.py --sample N` generates N lightweight synthetic rows deterministically (seeded with `random.seed(42)`) and inserts them the same way the real pipeline does — through `COPY ... FROM STDIN`. This means the CI load step exercises the actual insert path, index creation, and benchmark logging, just with smaller data.
+
+### Secrets
+
+DB credentials are stored as GitHub Actions repository secrets (`DB_NAME`, `DB_USER`, `DB_PASSWORD`) and injected at runtime. The `.env` file, which holds the real SMTP credentials, is never committed.
+
+### Backup in CI
+
+`backup.sh` detects the `CI=true` environment variable that GitHub Actions sets automatically and runs `pg_dump` directly against the service container instead of going through `docker exec`. The backup mechanism is the same; the transport layer adapts to the environment.
 
 ## What Can Be Improved
 
