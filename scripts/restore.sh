@@ -4,9 +4,10 @@ set -euo pipefail
 # Run from the project root regardless of where this script is invoked from.
 cd "$(dirname "$0")/.."
 
-set -a
-source .env
-set +a
+# In CI, credentials come from the environment directly; .env is not committed.
+if [ -f .env ]; then
+    set -a; source .env; set +a
+fi
 
 CONTAINER_NAME="taxidb-postgres"
 LOG_FILE="./logs/backup.log"
@@ -42,5 +43,9 @@ log "Starting restore of $DB_NAME from $BACKUP_FILE..."
 # --clean drops existing objects before recreating them from the dump;
 # --if-exists avoids erroring on objects (e.g. a manually dropped table)
 # that are already missing.
-docker exec -i "$CONTAINER_NAME" pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists -Fc < "$BACKUP_FILE"
+if [ "${CI:-}" = "true" ]; then
+    PGPASSWORD="$DB_PASSWORD" pg_restore -h "${DB_HOST:-localhost}" -U "$DB_USER" -d "$DB_NAME" --clean --if-exists -Fc < "$BACKUP_FILE"
+else
+    docker exec -i "$CONTAINER_NAME" pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists -Fc < "$BACKUP_FILE"
+fi
 log "Restore complete from $BACKUP_FILE"

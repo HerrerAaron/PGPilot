@@ -1,6 +1,12 @@
 # PGPilot
 
 ![CI](https://github.com/HerrerAaron/PGPilot/actions/workflows/ci.yml/badge.svg)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)
+
+PGPilot is a database operations toolkit built around a real-world NYC taxi dataset. It covers the full operational lifecycle of a PostgreSQL database: ingesting and cleaning 3.8M rows of raw trip data, automating backups with rotation and log management, monitoring database health with threshold-based email alerting, and validating everything end-to-end in a CI pipeline on every push.
 
 ## Getting Started: Running the Database
 
@@ -172,13 +178,25 @@ In a DevOps role, you can't rely on manual testing for database changes. A schem
 
 The original dataset is a 600MB parquet file that lives in `orig_data/` and is gitignored. CI can't use it. Instead, `load_data.py --sample N` generates N lightweight synthetic rows deterministically (seeded with `random.seed(42)`) and inserts them the same way the real pipeline does — through `COPY ... FROM STDIN`. This means the CI load step exercises the actual insert path, index creation, and benchmark logging, just with smaller data.
 
-### Secrets
+### Backup and restore verification
 
-DB credentials are stored as GitHub Actions repository secrets (`DB_NAME`, `DB_USER`, `DB_PASSWORD`) and injected at runtime. The `.env` file, which holds the real SMTP credentials, is never committed.
+The CI pipeline doesn't just run a backup — it verifies the backup is actually usable. After `backup.sh` produces a dump, the workflow drops the `trips` table entirely, restores from the dump, and queries the row count to confirm the data came back. A backup that can't restore is worthless, so testing the full cycle is more meaningful than testing either step in isolation.
 
-### Backup in CI
+Both `backup.sh` and `restore.sh` detect the `CI=true` environment variable that GitHub Actions sets automatically and call `pg_dump`/`pg_restore` directly instead of going through `docker exec`. The logic is the same; only the transport layer adapts to the environment.
 
-`backup.sh` detects the `CI=true` environment variable that GitHub Actions sets automatically and runs `pg_dump` directly against the service container instead of going through `docker exec`. The backup mechanism is the same; the transport layer adapts to the environment.
+## What I Learned
+
+**PostgreSQL internals** — how `pg_stat_activity`, `pg_stat_user_tables`, and `pg_database_size()` expose live database state; why `EXPLAIN ANALYZE` output varies based on physical row order (`pg_stats.correlation`); how dead tuples accumulate and why `VACUUM` matters for query performance.
+
+**Data engineering** — cleaning a real-world dataset with non-obvious rules (keeping null passenger counts, filtering by derived month bounds); why `COPY ... FROM STDIN` is orders of magnitude faster than row-by-row inserts; why indexes are built after a bulk load, not before.
+
+**Backup and recovery** — using `pg_dump -Fc` (custom format) vs plain SQL; `pg_restore --clean --if-exists` for safe incremental restores; separating backup rotation from log rotation since they have different retention windows and failure modes.
+
+**Docker and containerization** — the sidecar pattern for running `cron` alongside a database without modifying the database image; mounting the Docker socket so a container can exec into a sibling container; how Docker volumes persist data independently of container lifecycle.
+
+**Observability** — the difference between polling-based monitoring and event-driven alerting, and where polling breaks down; storing metric history in a table to surface trends that a single snapshot misses; using `--dry-run` flags to test alert logic safely in any environment.
+
+**CI/CD** — why environment parity matters (code passing locally but failing in CI usually means an undeclared dependency); client-side vs server-side `COPY` and why they behave differently across environments; using `CI=true` as a branch point to adapt scripts without duplicating them.
 
 ## What Can Be Improved
 

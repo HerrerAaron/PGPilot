@@ -58,3 +58,28 @@ jobs:
 
       - name: Run backup
         run: bash scripts/backup.sh
+
+      - name: Verify restore
+        run: |
+          DB_URL="postgresql://taxiuser:testpass@localhost:5432/taxidb"
+
+          BEFORE=$(psql $DB_URL -t -c "SELECT count(*) FROM trips" | tr -d ' ')
+
+          psql $DB_URL -c "DROP TABLE trips CASCADE"
+
+          DUMP=$(ls backups/*.dump | head -1)
+          bash scripts/restore.sh "$DUMP"
+
+          AFTER=$(psql $DB_URL -t -c "SELECT count(*) FROM trips" | tr -d ' ')
+          [ "$AFTER" -eq "$BEFORE" ] || { echo "Row count mismatch: expected $BEFORE got $AFTER"; exit 1; }
+          echo "Row count: $BEFORE -> $AFTER (match)"
+
+          FK_COUNT=$(psql $DB_URL -t -c "SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid = 'trips'::regclass" | tr -d ' ')
+          [ "$FK_COUNT" -gt 0 ] || { echo "FK constraints missing after restore"; exit 1; }
+          echo "FK constraints: $FK_COUNT restored"
+
+          IDX_COUNT=$(psql $DB_URL -t -c "SELECT count(*) FROM pg_indexes WHERE tablename = 'trips'" | tr -d ' ')
+          [ "$IDX_COUNT" -ge 2 ] || { echo "Indexes missing after restore"; exit 1; }
+          echo "Indexes: $IDX_COUNT restored"
+
+          echo "Restore fully verified"
