@@ -1,6 +1,7 @@
 import argparse
 import os
 import smtplib
+from datetime import datetime
 from email.message import EmailMessage
 
 import psycopg2
@@ -37,6 +38,10 @@ WARNING_DB_SIZE_MB   = 1000
 WARNING_CONNECTIONS  = 50
 WARNING_QUERY_SEC    = 30
 WARNING_BLOAT_PCT    = 20
+
+def log(msg):
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+
 
 def collect_metrics(conn):
     metrics = {}
@@ -97,7 +102,8 @@ def save_metrics(conn, metrics, status):
 
 def send_alert(subject, body, dry_run=False):
     if dry_run:
-        print(f"[dry-run] Would send alert: {subject}\n{body}")
+        log(f"[dry-run] Would send alert: {subject}")
+        print(body)
         return
 
     msg = EmailMessage()
@@ -111,7 +117,7 @@ def send_alert(subject, body, dry_run=False):
         smtp.login(SMTP_USER, SMTP_PASSWORD)
         smtp.send_message(msg)
 
-    print(f"Alert sent: {subject}")
+    log(f"Alert sent: {subject}")
 
 
 def main():
@@ -139,7 +145,7 @@ def main():
                 dry_run=args.dry_run,
             )
         else:
-            print(f"Status: {status} — {metrics}")
+            log(f"Status: {status} — {metrics}")
     finally:
         conn.close()
 
