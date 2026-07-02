@@ -1,0 +1,85 @@
+name: Database CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: taxidb
+          POSTGRES_USER: taxiuser
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DB_NAME: taxidb
+      DB_USER: taxiuser
+      DB_PASSWORD: testpass
+      DB_HOST: localhost
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          sudo apt-get install -y postgresql-client
+
+      - name: Apply schema
+        run: |
+          psql postgresql://taxiuser:testpass@localhost:5432/taxidb -f init/01_schema.sql
+          psql postgresql://taxiuser:testpass@localhost:5432/taxidb -c "\copy zones (location_id, borough, zone, service_zone) FROM 'init/taxi_zone_lookup.csv' WITH (FORMAT csv, HEADER true)"
+          psql postgresql://taxiuser:testpass@localhost:5432/taxidb -f init/03_load_log.sql
+          psql postgresql://taxiuser:testpass@localhost:5432/taxidb -f init/04_index_benchmark.sql
+          psql postgresql://taxiuser:testpass@localhost:5432/taxidb -f init/05_db_metrics.sql
+
+      - name: Load sample data
+        run: python scripts/load_data.py --sample 1000
+
+      - name: Run monitor dry-run
+        run: python scripts/monitor.py --dry-run
+
+      - name: Run backup
+        run: bash scripts/backup.sh
+
+      - name: Verify restore
+        run: |
+          DB_URL="postgresql://taxiuser:testpass@localhost:5432/taxidb"
+
+          BEFORE=$(psql $DB_URL -t -c "SELECT count(*) FROM trips" | tr -d ' ')
+
+          psql $DB_URL -c "DROP TABLE trips CASCADE"
+
+          DUMP=$(ls backups/*.dump | head -1)
+          bash scripts/restore.sh "$DUMP"
+
+          AFTER=$(psql $DB_URL -t -c "SELECT count(*) FROM trips" | tr -d ' ')
+          [ "$AFTER" -eq "$BEFORE" ] || { echo "Row count mismatch: expected $BEFORE got $AFTER"; exit 1; }
+          echo "Row count: $BEFORE -> $AFTER (match)"
+
+          FK_COUNT=$(psql $DB_URL -t -c "SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid = 'trips'::regclass" | tr -d ' ')
+          [ "$FK_COUNT" -gt 0 ] || { echo "FK constraints missing after restore"; exit 1; }
+          echo "FK constraints: $FK_COUNT restored"
+
+          IDX_COUNT=$(psql $DB_URL -t -c "SELECT count(*) FROM pg_indexes WHERE tablename = 'trips'" | tr -d ' ')
+          [ "$IDX_COUNT" -ge 2 ] || { echo "Indexes missing after restore"; exit 1; }
+          echo "Indexes: $IDX_COUNT restored"
+
+          echo "Restore fully verified"

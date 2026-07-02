@@ -1,44 +1,40 @@
 # PGPilot
 
-## Getting Started: Running the Database
+![CI](https://github.com/HerrerAaron/PGPilot/actions/workflows/ci.yml/badge.svg?branch=phase5%2FCI_CD)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-CI-2088FF?logo=github-actions&logoColor=white)
 
-This project runs PostgreSQL 16 inside Docker, with schema initialization handled automatically on first start.
+PGPilot is a database operations toolkit built around a real-world NYC taxi dataset. It covers the full operational lifecycle of a PostgreSQL database: ingesting and cleaning 3.8M rows of raw trip data, automating backups with rotation and log management, monitoring database health with threshold-based email alerting, and validating everything end-to-end in a CI pipeline on every push.
 
-1. Copy `.env.example` to `.env` and set your own credentials:
-   ```
-   cp .env.example .env
-   ```
-2. Start the database:
-   ```
-   docker compose up -d
-   ```
-3. Verify the container is healthy:
-   ```
-   docker compose ps
-   ```
-4. Connect with `psql`:
-   ```
-   docker exec -it taxidb-postgres psql -U taxiuser -d taxidb
-   ```
+## Features
 
-The schema in [init/01_schema.sql](init/01_schema.sql) (`vendors`, `payment_types`, `trips`) is applied automatically the first time the `pgdata` volume is created. If you change the schema after the volume already exists, drop the volume (`docker compose down -v`) and start again to re-run init scripts.
+- Ingested and cleaned 3.8M rows of real NYC Yellow Taxi trip data, rejecting 26,585 rows (0.69%) based on documented business logic rules
+- Bulk-loaded data using Postgres's native `COPY` command, then benchmarked index performance before and after with `EXPLAIN ANALYZE`
+- Automated daily `pg_dump` backups with 7-day rotation, log management, and a dedicated scheduler sidecar running on a cron schedule
+- Verified restore integrity end-to-end: drops the `trips` table, restores from the dump, then confirms row counts, foreign key constraints, and indexes all match the pre-drop state
+- Monitors four database health metrics via Postgres system views with threshold-based SMTP email alerting
+- GitHub Actions CI pipeline that applies schema migrations, loads synthetic data, and runs a full backup/restore cycle on every push
+
+## Tech Stack
+
+| Tool | Role |
+|---|---|
+| PostgreSQL 16 | Primary database |
+| Python, pandas, psycopg2 | Data ingestion and monitoring pipeline |
+| Bash | Backup, restore, and log management scripts |
+| Docker, Docker Compose | Containerization and scheduler sidecar |
+| GitHub Actions | CI pipeline |
+| smtplib | SMTP email alerting |
 
 ## Loading Data
 
 [scripts/load_data.py](scripts/load_data.py) is a data engineering pipeline that ingests NYC TLC's public Yellow Taxi Trip Records (Parquet), cleans them, and bulk-loads them into Postgres. It turns a single month of data (~3.8M rows) into a realistic operational dataset for testing backup, monitoring, and performance-tuning workflows against.
 
-**Running it:**
-
-```
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python scripts/load_data.py
-```
-
 ### Data cleaning
 
-Several rows in the dataset were dropped due to containing logical errors that didn't make sense. Some of this criteria is provided below. 
+Several rows in the dataset were dropped due to containing logical errors that didn't make sense. Some of this criteria is provided below.
 
 | Rule | Reasoning |
 |---|---|
@@ -64,6 +60,10 @@ Indexes on `pickup_datetime` and `total_amount` are added **after** the bulk loa
 | `total_amount > 100` | 235.79 ms | 183.76 ms | **1.3x** |
 
 The two indexes deliver very different speedups despite similarly selective queries. `pg_stats.correlation` explains why: `pickup_datetime` is `0.68` (rows were loaded in roughly chronological order, so matching rows sit on a small number of adjacent disk pages) versus `0.15` for `total_amount` (high-fare trips are scattered randomly across the table, so even a precise index still has to fetch from thousands of scattered pages). An index's payoff depends on how well the indexed column correlates with the table's physical row order, not just on how selective the query is.
+
+### Auditability
+
+Every run of `load_data.py` records its own row counts, rejection counts, and timing breakdown to a `load_log` table, giving a persistent, queryable history of every load rather than relying on console output or memory.
 
 ## Backup & Recovery
 
@@ -111,10 +111,6 @@ Native Windows has no `cron`, so scheduling runs in a dedicated `scheduler` cont
 
 This works identically on any host (Windows, Mac, Linux) since `cron` runs inside the container, not on the host OS. The sidecar mounts the host's Docker socket and the project directory, so it can `docker exec` into `taxidb-postgres` exactly like a person running `backup.sh` manually would, and any backups/logs it produces land in the real `backups/`/`logs/` directories on the host, not trapped inside the container. Verified directly: manually triggered `backup.sh` and `restore.sh` through the sidecar (`docker exec taxidb-scheduler /app/scripts/backup.sh`), confirmed the resulting `.dump` file appeared on the host filesystem, and confirmed `crontab -l` inside the container shows the real schedule loaded and ready to fire on its own.
 
-### Auditability
-
-Every run of `load_data.py` records its own row counts, rejection counts, and timing breakdown to a `load_log` table, giving a persistent, queryable history of every load rather than relying on console output or memory.
-
 ## Health Monitoring & Alerting
 
 [scripts/monitor.py](scripts/monitor.py) polls the database every 15 minutes via the `scheduler` sidecar, collects four health metrics from Postgres's built-in system views, and sends an email alert if any metric crosses a warning or critical threshold.
@@ -158,6 +154,38 @@ When any metric crosses a threshold, an email is sent via SMTP with the metric v
 
 The monitor runs every 15 minutes via the existing `scheduler` sidecar alongside the backup jobs. No additional infrastructure is needed. Output from each automated run is appended to `logs/monitor.log`.
 
+## CI/CD
+
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push and pull request. It spins up a real Postgres 16 instance, applies every schema migration from `init/`, loads 1,000 synthetic rows, runs the health monitor in dry-run mode, and runs a full backup and restore verification cycle — all in a clean environment with no local state.
+
+### Why this matters
+
+In a DevOps role, you can't rely on manual testing for database changes. A schema migration that looks fine locally might break against a fresh database if an init script runs in the wrong order, or a script that works on your machine might silently assume a file that isn't committed. CI catches both of these automatically on every push, before any issue reaches a teammate or a deployment.
+
+### Synthetic data for CI
+
+The original dataset is a 600MB parquet file that lives in `orig_data/` and is gitignored. CI can't use it. Instead, `load_data.py --sample N` generates N lightweight synthetic rows deterministically (seeded with `random.seed(42)`) and inserts them the same way the real pipeline does — through `COPY ... FROM STDIN`. This means the CI load step exercises the actual insert path, index creation, and benchmark logging, just with smaller data.
+
+### Backup and restore verification
+
+The CI pipeline doesn't just run a backup — it verifies the backup is actually usable. After `backup.sh` produces a dump, the workflow drops the `trips` table entirely, restores from the dump, and confirms that row counts, foreign key constraints, and indexes all match the pre-drop state. A backup that can't restore is worthless, so testing the full cycle is more meaningful than testing either step in isolation.
+
+Both `backup.sh` and `restore.sh` detect the `CI=true` environment variable that GitHub Actions sets automatically and call `pg_dump`/`pg_restore` directly instead of going through `docker exec`. The logic is the same; only the transport layer adapts to the environment.
+
+## What I Learned
+
+**PostgreSQL internals** — how `pg_stat_activity`, `pg_stat_user_tables`, and `pg_database_size()` expose live database state; why `EXPLAIN ANALYZE` output varies based on physical row order (`pg_stats.correlation`); how dead tuples accumulate and why `VACUUM` matters for query performance.
+
+**Data engineering** — cleaning a real-world dataset with non-obvious rules (keeping null passenger counts, filtering by derived month bounds); why `COPY ... FROM STDIN` is orders of magnitude faster than row-by-row inserts; why indexes are built after a bulk load, not before.
+
+**Backup and recovery** — using `pg_dump -Fc` (custom format) vs plain SQL; `pg_restore --clean --if-exists` for safe incremental restores; separating backup rotation from log rotation since they have different retention windows and failure modes.
+
+**Docker and containerization** — the sidecar pattern for running `cron` alongside a database without modifying the database image; mounting the Docker socket so a container can exec into a sibling container; how Docker volumes persist data independently of container lifecycle.
+
+**Observability** — the difference between polling-based monitoring and event-driven alerting, and where polling breaks down; storing metric history in a table to surface trends that a single snapshot misses; using `--dry-run` flags to test alert logic safely in any environment.
+
+**CI/CD** — why environment parity matters (code passing locally but failing in CI usually means an undeclared dependency); client-side vs server-side `COPY` and why they behave differently across environments; using `CI=true` as a branch point to adapt scripts without duplicating them.
+
 ## What Can Be Improved
 
 - **Backup retention: Grandfather-Father-Son (GFS) tiering.** `backup.sh` currently uses a flat 7-day retention window. Real backup tooling typically uses GFS rotation instead: daily backups kept for a week, one weekly backup kept for a month, one monthly backup kept for a year, so long-term recoverability doesn't require keeping every daily snapshot forever. This wasn't implemented here because it solves a storage-growth problem that doesn't really exist at this project's scale, but it's the natural next step if this database were holding production-scale, long-lived data.
@@ -165,3 +193,37 @@ The monitor runs every 15 minutes via the existing `scheduler` sidecar alongside
 - **Polling-based monitoring has a blind spot.** `monitor.py` captures a snapshot at the moment it runs — an incident that starts and resolves between two 15-minute checks goes completely undetected. In production this is addressed by shortening the interval (Prometheus scrapes every 15–30 seconds) or replacing polling with event-driven alerting entirely. At this project's scale the trade-off is acceptable, but it's worth understanding the gap.
 
 - **Scheduled backups depend on the machine being on.** The `scheduler` container's `cron` job only fires if the container, Docker Desktop, and the physical machine are all running at 2am. This is correct behavior for an always-on production server, which is what the schedule is modeling, but on a personal dev machine that sleeps or shuts down overnight, that night's backup is simply skipped, since standard `cron` doesn't retroactively run missed jobs. A production deployment on an always-on host wouldn't have this gap; mitigations for a personal machine would include also running a backup on container startup, or configuring Windows to wake the machine for scheduled tasks.
+
+## Getting Started
+
+1. Copy `.env.example` to `.env` and fill in your credentials:
+   ```
+   cp .env.example .env
+   ```
+2. Start the database and scheduler:
+   ```
+   docker compose up -d
+   ```
+3. Verify both containers are healthy:
+   ```
+   docker compose ps
+   ```
+4. Connect with `psql`:
+   ```
+   docker exec -it taxidb-postgres psql -U taxiuser -d taxidb
+   ```
+
+The schema in [init/01_schema.sql](init/01_schema.sql) is applied automatically the first time the `pgdata` volume is created. If you change the schema after the volume already exists, drop the volume (`docker compose down -v`) and start again.
+
+To load data, download the [April 2026 NYC TLC Yellow Taxi parquet file](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) into `orig_data/`, then:
+
+```
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python scripts/load_data.py
+```
+
+## Author
+
+**Aaron Herrera** — [GitHub](https://github.com/HerrerAaron) · [LinkedIn](https://www.linkedin.com/in/aaronherrera4/)

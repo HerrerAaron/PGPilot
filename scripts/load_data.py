@@ -1,5 +1,7 @@
+import argparse
 import io
 import os
+import random
 import re
 import time
 
@@ -83,6 +85,33 @@ def load_and_clean(path):
     rows_clean = len(df)
     return df, rows_read, rows_clean
 
+# Generate n synthetic rows for CI use when the parquet file is unavailable
+def generate_sample(n):
+    random.seed(42)
+    base = pd.Timestamp("2026-04-15 08:00:00")
+    records = []
+    for i in range(n):
+        pickup = base + pd.Timedelta(minutes=i * 2)
+        dropoff = pickup + pd.Timedelta(minutes=random.randint(5, 45))
+        fare = round(random.uniform(5.0, 80.0), 2)
+        tip = round(random.uniform(0.0, 15.0), 2)
+        records.append({
+            "vendor_id": random.choice([1, 2]),
+            "pickup_datetime": pickup,
+            "dropoff_datetime": dropoff,
+            "passenger_count": random.randint(1, 4),
+            "trip_distance": round(random.uniform(0.5, 15.0), 2),
+            "pickup_location_id": random.randint(1, 100),
+            "dropoff_location_id": random.randint(1, 100),
+            "fare_amount": fare,
+            "tip_amount": tip,
+            "total_amount": round(fare + tip + 3.0, 2),
+            "payment_type": random.randint(1, 4),
+        })
+    df = pd.DataFrame(records, columns=TRIP_COLUMNS)
+    df["passenger_count"] = df["passenger_count"].astype("Int64")
+    return df
+
 
 def bulk_insert(conn, df):
     buffer = io.StringIO()
@@ -153,9 +182,21 @@ def log_run(conn, source_file, rows_loaded, rows_rejected, copy_duration, durati
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sample", type=int, metavar="N",
+                        help="Generate N synthetic rows instead of loading the parquet file.")
+    args = parser.parse_args()
+
     start = time.perf_counter()
-    df, rows_read, rows_clean = load_and_clean(PARQUET_FILE)
-    rows_rejected = rows_read - rows_clean
+    if args.sample:
+        df = generate_sample(args.sample)
+        rows_read = rows_clean = args.sample
+        rows_rejected = 0
+        source_file = f"--sample {args.sample}"
+    else:
+        df, rows_read, rows_clean = load_and_clean(PARQUET_FILE)
+        rows_rejected = rows_read - rows_clean
+        source_file = PARQUET_FILE
     clean_duration = time.perf_counter() - start
 
     conn = psycopg2.connect(**DB_CONFIG)
@@ -175,7 +216,7 @@ def main():
         after = benchmark_queries(conn, "after")
 
         duration = time.perf_counter() - start
-        log_run(conn, PARQUET_FILE, rows_clean, rows_rejected, copy_duration, duration)
+        log_run(conn, source_file, rows_clean, rows_rejected, copy_duration, duration)
     finally:
         conn.close()
 
