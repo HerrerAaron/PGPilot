@@ -1,11 +1,14 @@
 # PGPilot
 
+> *A PostgreSQL-based project that focuses on DevOps concepts such as backup and recovery, automated operations, health monitoring, and continuous integration.*
+
 ![CI](https://github.com/HerrerAaron/PGPilot/actions/workflows/ci.yml/badge.svg)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![GitHub Actions](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)
 
+## About
 PGPilot is a database operations toolkit built around a real-world NYC taxi dataset. It covers the full operational lifecycle of a PostgreSQL database: ingesting and cleaning 3.8M rows of raw trip data, automating backups with rotation and log management, monitoring database health with threshold-based email alerting, and validating everything end-to-end in a CI pipeline on every push.
 
 ## Getting Started: Running the Database
@@ -205,3 +208,6 @@ Both `backup.sh` and `restore.sh` detect the `CI=true` environment variable that
 - **Polling-based monitoring has a blind spot.** `monitor.py` captures a snapshot at the moment it runs — an incident that starts and resolves between two 15-minute checks goes completely undetected. In production this is addressed by shortening the interval (Prometheus scrapes every 15–30 seconds) or replacing polling with event-driven alerting entirely. At this project's scale the trade-off is acceptable, but it's worth understanding the gap.
 
 - **Scheduled backups depend on the machine being on.** The `scheduler` container's `cron` job only fires if the container, Docker Desktop, and the physical machine are all running at 2am. This is correct behavior for an always-on production server, which is what the schedule is modeling, but on a personal dev machine that sleeps or shuts down overnight, that night's backup is simply skipped, since standard `cron` doesn't retroactively run missed jobs. A production deployment on an always-on host wouldn't have this gap; mitigations for a personal machine would include also running a backup on container startup, or configuring Windows to wake the machine for scheduled tasks.
+
+## Author
+**Aaron Herrera** — [GitHub](https://github.com/HerrerAaron) • [LinkedIn](https://www.linkedin.com/in/aaronherrera4/)
