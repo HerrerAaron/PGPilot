@@ -1,6 +1,6 @@
 # PGPilot
 
->*A PostgreSQL operations toolkit built on real NYC taxi data that covers data ingestion, automated backups, health monitoring, and CI.*
+>*A PostgreSQL operations toolkit built on real NYC taxi data that covers data ingestion, automated backups, health monitoring, and Continuous Integration (CI).*
 
 ![CI](https://github.com/HerrerAaron/PGPilot/actions/workflows/ci.yml/badge.svg)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
@@ -62,7 +62,7 @@ Several rows in the dataset were dropped due to containing logical errors.
 | `fare_amount < 0` / `total_amount < 0` | A fare cannot be negative |
 | `passenger_count = 0` | A completed fare implies at least one rider. Nulls are kept since they represent a real, documented "Flex Fare" trip type with no metered passenger count, not bad data. |
 | `dropoff_datetime < pickup_datetime` | A trip cannot end before it starts |
-| pickup outside the file's month | Catches a handful of mis-keyed dates (e.g. timestamps decades off) |
+| pickup outside the file's month | Only focused on trips during April 2026 |
 | null pickup/dropoff zone | Required to satisfy the FK into the `zones` lookup table |
 
 On the April 2026 file: **3,831,240 rows read → 3,804,655 loaded, 26,585 rejected (0.69%)**, the bulk of which were negative fare/total amounts.
@@ -96,7 +96,7 @@ Every run of `load_data.py` records its own row counts, rejection counts, and ti
 ./scripts/backup.sh
 ```
 
-This dumps the database to a timestamped, compressed file in `backups/` (e.g. `taxidb_20260627_194658.dump`, ~72MB for the full ~3.8M-row dataset), logs the run to `logs/backup.log`, and deletes any `.dump` file older than 7 days.
+This dumps the database to a timestamped, compressed file in `backups/` (e.g. `taxidb_20260627_194658.dump`), logs the run to `logs/backup.log`, and deletes any `.dump` file older than 7 days.
 
 **Manual restore:**
 
@@ -162,6 +162,7 @@ python scripts/monitor.py --dry-run
 Every run inserts a row into `db_metrics` regardless of status, giving a queryable record of database health over time. This makes it possible to spot gradual trends that a single snapshot wouldn't reveal.
 
 ![db_metrics table](images/metrics_table.png)
+
 *Monitoring results stored in the db_metrics table.*
 
 ### Alerting
@@ -169,6 +170,7 @@ Every run inserts a row into `db_metrics` regardless of status, giving a queryab
 When any metric crosses a threshold, an email is sent via SMTP with the metric values and status level. Thresholds are defined as named constants at the top of [scripts/monitor.py](scripts/monitor.py) and can be tuned to match the environment's normal baseline. `--dry-run` prints the alert body to the terminal instead of sending, making it safe to test without live email credentials.
 
 ![critical_warning_alert](images/email_critical_warning.png)
+
 *Alert sent to email when critical threshold is surpassed.*
 
 ### Scheduling
@@ -177,7 +179,7 @@ The monitor runs every 15 minutes via the existing `scheduler` sidecar alongside
 
 ## Continuous Integration
 
-[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push and pull request. It spins up a real Postgres 16 instance, applies every schema migration from `init/`, loads 1,000 synthetic rows, runs the health monitor in dry-run mode, and runs a full backup and restore verification cycle.
+[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push and pull request. It spins up a real Postgres 16 instance, builds the database schema from `/init`, loads 1,000 synthetic rows, runs the health monitor in dry-run mode, and runs a full backup and restore verification cycle.
 
 ### Synthetic data for CI
 
@@ -195,7 +197,7 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 - How dead tuples accumulate and why `VACUUM` matters for query performance
 
 **Data Engineering**:
-- Cleaning a real-world dataset with non-obvious rules (keeping null passenger counts, filtering by derived month bounds)
+- Cleaning a real-world dataset with non-obvious rules (e.g. keeping null passenger counts)
 - Why `COPY ... FROM STDIN` is faster than row-by-row inserts
 - Why indexes are built after a bulk load, not before
 
@@ -222,7 +224,7 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 
 ## What Can Be Improved
 
-- **Backup retention (GFS tiering).** `backup.sh` uses a flat 7-day window. Production systems typically use Grandfather-Father-Son rotation (i.e. daily backups for a week, weekly for a month, monthly for a year) so long-term recoverability doesn't require keeping every daily snapshot indefinitely. This wasn't implemented here since the storage-growth problem doesn't exist at this project's scale.
+- **Backup retention (GFS tiering).** `backup.sh` uses a flat 7-day window. Production systems typically use Grandfather-Father-Son (GFS) rotation (i.e. daily backups for a week, weekly for a month, monthly for a year) so long-term recoverability doesn't require keeping every daily snapshot indefinitely. This wasn't implemented here since the storage-growth problem doesn't exist at this project's scale.
 
 - **Polling-based monitoring has a blind spot.** `monitor.py` captures a snapshot every 15 minutes, so an incident that starts and resolves between checks goes undetected. In production this is addressed by shortening the interval (Prometheus scrapes every 15–30 seconds) or replacing polling with event-driven alerting entirely. At this project's scale the trade-off is acceptable, but it's worth understanding the gap.
 
