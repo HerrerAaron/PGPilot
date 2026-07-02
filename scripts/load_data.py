@@ -85,9 +85,8 @@ def load_and_clean(path):
     rows_clean = len(df)
     return df, rows_read, rows_clean
 
-
+# Generate n synthetic rows for CI use when the parquet file is unavailable
 def generate_sample(n):
-    """Generate n synthetic rows for CI use when the parquet file is unavailable."""
     random.seed(42)
     base = pd.Timestamp("2026-04-15 08:00:00")
     records = []
