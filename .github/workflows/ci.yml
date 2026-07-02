@@ -44,9 +44,11 @@ jobs:
 
       - name: Apply schema
         run: |
-          for f in init/*.sql; do
-            psql postgresql://taxiuser:testpass@localhost:5432/taxidb -f "$f"
-          done
+          psql postgresql://taxiuser:testpass@localhost:5432/taxidb -f init/01_schema.sql
+          psql postgresql://taxiuser:testpass@localhost:5432/taxidb -c "\copy zones (location_id, borough, zone, service_zone) FROM 'init/taxi_zone_lookup.csv' WITH (FORMAT csv, HEADER true)"
+          psql postgresql://taxiuser:testpass@localhost:5432/taxidb -f init/03_load_log.sql
+          psql postgresql://taxiuser:testpass@localhost:5432/taxidb -f init/04_index_benchmark.sql
+          psql postgresql://taxiuser:testpass@localhost:5432/taxidb -f init/05_db_metrics.sql
 
       - name: Load sample data
         run: python scripts/load_data.py --sample 1000
