@@ -80,7 +80,7 @@ Indexes on `pickup_datetime` and `total_amount` are added **after** the bulk loa
 | `pickup_datetime` between date range | 152.70 ms | 27.96 ms | **5.5x** |
 | `total_amount > 100` | 235.79 ms | 183.76 ms | **1.3x** |
 
-The two indexes deliver very different speedups despite similarly selective queries. `pg_stats.correlation` explains why: `pickup_datetime` is `0.68` (rows were loaded in roughly chronological order, so matching rows sit on a small number of adjacent disk pages) versus `0.15` for `total_amount` (high-fare trips are scattered randomly across the table, so even a precise index still has to fetch from thousands of scattered pages). An index's payoff depends on how well the indexed column correlates with the table's physical row order, not just on how selective the query is.
+The two indexes deliver very different speedups despite similarly selective queries. `pg_stats.correlation` explains why: `pickup_datetime` is `0.68` (i.e. rows were loaded in roughly chronological order, so matching rows sit on a small number of adjacent disk pages) versus `0.15` for `total_amount` (i.e. high-fare trips are scattered randomly across the table, so even a precise index still has to fetch from thousands of scattered pages). An index's payoff depends on how well the indexed column correlates with the table's physical row order, not just on how selective the query is.
 
 ### Auditability
 
@@ -197,6 +197,7 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 - How dead tuples accumulate and why `VACUUM` matters for query performance
 
 **Data Engineering**:
+<<<<<<< Updated upstream
 - Cleaning a real-world dataset with non-obvious rules (e.g. keeping null passenger counts)
 - Why `COPY ... FROM STDIN` is faster than row-by-row inserts
 - Why indexes are built after a bulk load, not before
@@ -226,7 +227,7 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 
 - **Backup retention (GFS tiering).** `backup.sh` uses a flat 7-day window. Production systems typically use Grandfather-Father-Son (GFS) rotation (i.e. daily backups for a week, weekly for a month, monthly for a year) so long-term recoverability doesn't require keeping every daily snapshot indefinitely. This wasn't implemented here since the storage-growth problem doesn't exist at this project's scale.
 
-- **Polling-based monitoring has a blind spot.** `monitor.py` captures a snapshot every 15 minutes, so an incident that starts and resolves between checks goes undetected. In production this is addressed by shortening the interval (Prometheus scrapes every 15–30 seconds) or replacing polling with event-driven alerting entirely. At this project's scale the trade-off is acceptable, but it's worth understanding the gap.
+- **Polling-based monitoring has a blind spot.** `monitor.py` captures a snapshot every 15 minutes, so an incident that starts and resolves between checks goes undetected. In production this is addressed by shortening the interval (e.g. Prometheus scrapes every 15–30 seconds) or replacing polling with event-driven alerting entirely. At this project's scale the trade-off is acceptable, but it's worth understanding the gap.
 
 - **Schema migrations.** The `init/` scripts only run on first volume creation, which works for a clean setup but doesn't support evolving the schema without dropping all data. A migrations tool like Flyway or Alembic would manage incremental schema changes safely in a long-lived production database.
 
