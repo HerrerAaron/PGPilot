@@ -12,9 +12,9 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: ${{ secrets.DB_NAME }}
-          POSTGRES_USER: ${{ secrets.DB_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          POSTGRES_DB: taxidb
+          POSTGRES_USER: taxiuser
+          POSTGRES_PASSWORD: testpass
         ports:
           - 5432:5432
         options: >-
@@ -24,9 +24,9 @@ jobs:
           --health-retries 5
 
     env:
-      DB_NAME: ${{ secrets.DB_NAME }}
-      DB_USER: ${{ secrets.DB_USER }}
-      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_NAME: taxidb
+      DB_USER: taxiuser
+      DB_PASSWORD: testpass
       DB_HOST: localhost
 
     steps:
@@ -45,7 +45,7 @@ jobs:
       - name: Apply schema
         run: |
           for f in init/*.sql; do
-            psql postgresql://$DB_USER:$DB_PASSWORD@localhost:5432/$DB_NAME -f "$f"
+            psql postgresql://taxiuser:testpass@localhost:5432/taxidb -f "$f"
           done
 
       - name: Load sample data
