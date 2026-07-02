@@ -197,7 +197,6 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 - How dead tuples accumulate and why `VACUUM` matters for query performance
 
 **Data Engineering**:
-<<<<<<< Updated upstream
 - Cleaning a real-world dataset with non-obvious rules (e.g. keeping null passenger counts)
 - Why `COPY ... FROM STDIN` is faster than row-by-row inserts
 - Why indexes are built after a bulk load, not before
