@@ -1,0 +1,22 @@
+ARG AIRFLOW_VERSION=3.3.0
+FROM apache/airflow:${AIRFLOW_VERSION}
+
+# Root for system packages
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      postgresql-client ca-certificates curl \
+ && curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz \
+      -o /tmp/docker.tgz \
+ && tar xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin docker/docker \
+ && chmod +x /usr/local/bin/docker \
+ && rm /tmp/docker.tgz \
+ && rm -rf /var/lib/apt/lists/*
+
+# Back to the airflow user for Python packages
+USER airflow
+RUN pip install --no-cache-dir \
+      pandas==3.0.3 \
+      pyarrow==24.0.0 \
+      psycopg2-binary==2.9.12 \
+      python-dotenv==1.2.2

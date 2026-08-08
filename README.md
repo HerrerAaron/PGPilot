@@ -1,10 +1,11 @@
 # PGPilot
 
->*A PostgreSQL operations toolkit built on real NYC taxi data that covers data ingestion, automated backups, health monitoring, and Continuous Integration (CI).*
+>*A PostgreSQL operations toolkit built on real NYC taxi data, orchestrated with Apache Airflow and covering data ingestion, automated backups, health monitoring, and Continuous Integration (CI).*
 
 ![CI](https://github.com/HerrerAaron/PGPilot/actions/workflows/ci.yml/badge.svg)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
+![Airflow](https://img.shields.io/badge/Apache_Airflow-3.3-017CEE?logo=apacheairflow&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-CI-2088FF?logo=github-actions&logoColor=white)
 
@@ -15,7 +16,8 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 
 - Ingested and cleaned 3.8M rows of real NYC Yellow Taxi trip data, rejecting 26,585 rows (0.69%) based on documented business logic rules
 - Bulk-loaded data using Postgres's native `COPY` command, then benchmarked index performance before and after with `EXPLAIN ANALYZE`
-- Automated daily `pg_dump` backups with 7-day rotation, log management, and a dedicated scheduler sidecar running on a cron schedule
+- Orchestrated with Apache Airflow: a `load → validate → backup` pipeline DAG with a fail-fast data-quality gate, plus a separate 15-minute health-monitoring DAG
+- Automated `pg_dump` backups with 7-day rotation and log management, triggered by Airflow only after a load passes validation
 - Verified restore integrity end-to-end: drops the `trips` table, restores from the dump, then confirms row counts, foreign key constraints, and indexes all match the pre-drop state
 - Monitors four database health metrics via Postgres system views with threshold-based SMTP email alerting
 - GitHub Actions CI pipeline that applies schema initialization scripts, loads synthetic data, and runs a full backup/restore cycle on every push
@@ -26,8 +28,9 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 |---|---|
 | PostgreSQL 16 | Primary database |
 | Python, pandas, psycopg2 | Data ingestion and monitoring pipeline |
+| Apache Airflow | Pipeline orchestration and scheduling |
 | Bash | Backup, restore, and log management scripts |
-| Docker, Docker Compose | Containerization and scheduler sidecar |
+| Docker, Docker Compose | Containerization |
 | GitHub Actions | CI pipeline |
 | smtplib | SMTP email alerting |
 
@@ -35,18 +38,23 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 
 ```mermaid
 graph TD
-    A[NYC TLC Parquet] -->|load_data.py| DB[(PostgreSQL 16\ntaxidb)]
+    PARQUET[NYC TLC Parquet] --> LOAD
 
-    subgraph Scheduler Sidecar
-        BACKUP[backup.sh\ndaily 2am]
-        MONITOR[monitor.py\nevery 15 min]
+    subgraph PIPELINE [pgpilot_pipeline DAG - monthly]
+        LOAD[load_taxi_data] --> VALIDATE[validate_load] --> BACKUP[backup_database]
     end
 
+    subgraph MONITORDAG [pgpilot_monitor DAG - every 15 min]
+        MONITOR[run_health_monitor]
+    end
+
+    LOAD --> DB[(PostgreSQL 16\ntaxidb)]
+    VALIDATE -.->|reads load_log| DB
     BACKUP -->|pg_dump| DUMP[backups/*.dump]
-    MONITOR -->|reads system views| DB
+    MONITOR --> DB
     MONITOR -->|threshold breached| EMAIL[Email Alert]
 
-    CI[GitHub Actions\non every push] -->|schema + synthetic data\nbackup + restore verify| DB
+    CI[GitHub Actions - on every push] -->|schema + synthetic data\nbackup + restore verify| DB
 ```
 
 ## Loading Data
@@ -120,21 +128,11 @@ Backup rotation (pruning old `.dump` files) and log rotation (managing `backup.l
 
 ### Scheduling
 
-Native Windows has no `cron`, so runs are scheduled in a dedicated `scheduler` container instead ([scheduler/Dockerfile](scheduler/Dockerfile), [scheduler/crontab](scheduler/crontab)). It's a small sidecar, separate from the database container, whose only job is running `cron` and triggering the existing, unmodified `backup.sh`/`restore.sh` on a real schedule:
-
-```
-# Daily backup at 2am
-0 2 * * * root /app/scripts/backup.sh >> /app/logs/cron.log 2>&1
-
-# Weekly summary every Sunday at 9am - last 20 lines of the backup log
-0 9 * * 0 root tail -n 20 /app/logs/backup.log >> /app/logs/weekly_summary.log 2>&1
-```
-
-Since `cron` runs inside the container rather than on the host OS, the schedule works identically on any machine. The sidecar mounts the Docker socket and the project directory, so backups and logs land directly on the host filesystem. Verified end-to-end by triggering `backup.sh` through the sidecar and confirming the resulting `.dump` file appeared on the host.
+Backups are triggered by Apache Airflow's `pgpilot_pipeline` DAG ([airflow/dags/pgpilot_pipeline.py](airflow/dags/pgpilot_pipeline.py)) as the last step of a `load_taxi_data → validate_load → backup_database` dependency chain, running monthly to match how often the TLC actually publishes new data. `backup_database` invokes the existing, unmodified `backup.sh` through Airflow's `BashOperator` — the underlying `docker exec`/`pg_dump` mechanics haven't changed, only what triggers them. See [Orchestration](#orchestration) for why this replaced the original `cron` sidecar.
 
 ## Health Monitoring & Alerting
 
-[scripts/monitor.py](scripts/monitor.py) polls the database every 15 minutes via the `scheduler` sidecar, collects four health metrics from Postgres's built-in system views, and sends an email alert if any metric crosses a warning or critical threshold.
+[scripts/monitor.py](scripts/monitor.py) polls the database every 15 minutes via Airflow's `pgpilot_monitor` DAG, collects four health metrics from Postgres's built-in system views, and sends an email alert if any metric crosses a warning or critical threshold.
 
 **Manual run:**
 
@@ -175,7 +173,30 @@ When any metric crosses a threshold, an email is sent via SMTP with the metric v
 
 ### Scheduling
 
-The monitor runs every 15 minutes via the existing `scheduler` sidecar alongside the backup jobs. Output from each automated run is appended to `logs/monitor.log`.
+The monitor runs every 15 minutes via Airflow's `pgpilot_monitor` DAG ([airflow/dags/pgpilot_monitor.py](airflow/dags/pgpilot_monitor.py)), a single-task DAG kept separate from the pipeline DAG since health checks need a much tighter cadence than a monthly data load. Each run's output is captured in the Airflow UI's per-task logs.
+
+## Orchestration
+
+[Apache Airflow](https://airflow.apache.org/) replaces the original `cron` sidecar. Two DAGs wrap the existing scripts as tasks — [pgpilot_pipeline.py](airflow/dags/pgpilot_pipeline.py) and [pgpilot_monitor.py](airflow/dags/pgpilot_monitor.py) — without rewriting any of `load_data.py`, `backup.sh`, or `monitor.py`.
+
+**`pgpilot_pipeline`** runs monthly, matching TLC's data-drop cadence, as a real dependency chain: `load_taxi_data → validate_load → backup_database`. `validate_load` reads the latest `load_log` row and fails the DAG if the load inserted zero rows or the rejection ratio exceeds 5%, so a broken load is never backed up.
+
+**`pgpilot_monitor`** runs independently every 15 minutes, since health checks need a tighter cadence than a monthly load.
+
+### Design choices
+
+- **LocalExecutor**, not the official Compose file's default `CeleryExecutor` — single-machine task execution needs no message broker or worker pool for local development.
+- **A separate metadata database** (`airflow-db`) tracks DAG runs and task state, entirely distinct from `taxidb`. Confusing the two is the most common Airflow setup mistake.
+- **A custom image** ([Dockerfile.airflow](Dockerfile.airflow)) adds the same Python dependencies the scripts already need, plus the `docker` CLI so `backup.sh`'s `docker exec` calls keep working unmodified from inside the Airflow container.
+- **No standalone daily backup DAG.** Data only changes on a monthly load, so a backup gated on a validated load is more meaningful than a fixed 2am snapshot of an unchanged database.
+
+### Running it
+
+```
+docker compose up -d --build
+```
+
+Open `http://localhost:8080` (`airflow` / `airflow`, set in `.env`), unpause `pgpilot_pipeline` and `pgpilot_monitor`, and trigger a run from the UI. Every task's logs are captured per run — a direct upgrade over `cron`'s flat log files.
 
 ## Continuous Integration
 
@@ -207,9 +228,15 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 - Separating backup rotation from log rotation since they have different retention windows and failure modes
 
 **Docker and Containerization**:
-- The sidecar pattern for running `cron` alongside a database without modifying the database image
+- The sidecar pattern for running an auxiliary process (`cron`, then Airflow) alongside a database without modifying the database image
 - Mounting the Docker socket so a container can exec into a sibling container
 - How Docker volumes persist data independently of container lifecycle
+
+**Orchestration**:
+- DAGs, operators, and explicit task dependencies as a replacement for implicit ordering in a cron schedule
+- Building a fail-fast data-quality gate (`validate_load`) that blocks a downstream task when upstream output looks wrong
+- LocalExecutor vs CeleryExecutor and when a message broker is actually necessary
+- Keeping an orchestrator's own metadata database cleanly separate from the data it orchestrates
 
 **Observability**:
 - The difference between polling-based monitoring and event-driven alerting, and where polling breaks down
@@ -230,17 +257,21 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 
 - **Schema migrations.** The `init/` scripts only run on first volume creation, which works for a clean setup but doesn't support evolving the schema without dropping all data. A migrations tool like Flyway or Alembic would manage incremental schema changes safely in a long-lived production database.
 
+- **LocalExecutor doesn't scale past one machine.** Airflow tasks run in parallel via multiprocessing on a single host, which is correct for local development but caps throughput at one machine's resources. Production Airflow deployments typically use `CeleryExecutor` or `KubernetesExecutor` to distribute tasks across workers.
+
 ## Getting Started
 
-1. Copy `.env.example` to `.env` and fill in your credentials:
+1. Copy `.env.example` to `.env`, fill in your credentials, and generate an Airflow Fernet key:
    ```
    cp .env.example .env
+   python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
    ```
-2. Start the database and scheduler:
+   Paste the generated value into `.env` as `FERNET_KEY`.
+2. Build and start the database and Airflow:
    ```
-   docker compose up -d
+   docker compose up -d --build
    ```
-3. Verify both containers are healthy:
+3. Verify all containers are healthy:
    ```
    docker compose ps
    ```
@@ -250,6 +281,8 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
    ```
 
 The schema in [init/01_schema.sql](init/01_schema.sql) is applied automatically the first time the `pgdata` volume is created. If you change the schema after the volume already exists, drop the volume (`docker compose down -v`) and start again.
+
+Airflow's UI is at `http://localhost:8080` (`airflow` / `airflow`, from `.env`). DAGs start paused — unpause `pgpilot_pipeline` and `pgpilot_monitor` and trigger a run from the UI. See [Orchestration](#orchestration) for details.
 
 **Load data** — download the [April 2026 NYC TLC Yellow Taxi parquet file](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) into `orig_data/`, then:
 
@@ -282,4 +315,4 @@ Remove `--dry-run` to send a real email alert. Requires `ALERT_EMAIL`, `SMTP_USE
 
 ## Author
 
-**Aaron Herrera** — [GitHub](https://github.com/HerrerAaron) · [LinkedIn](https://www.linkedin.com/in/aaronherrera4/)
+**Aaron Herrera** — [LinkedIn](https://www.linkedin.com/in/aaronherrera4/)
