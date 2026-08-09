@@ -183,6 +183,10 @@ The monitor runs every 15 minutes via Airflow's `pgpilot_monitor` DAG ([airflow/
 
 **`pgpilot_monitor`** runs independently every 15 minutes, since health checks need a tighter cadence than a monthly load.
 
+![airflow_pipeline_run](images/airflow_pipeline_run.png)
+
+*A completed `pgpilot_pipeline` run — each box names its Airflow operator type (`BashOperator`, `PythonOperator`) and its outcome.*
+
 ### Design choices
 
 - **LocalExecutor**, not the official Compose file's default `CeleryExecutor` — single-machine task execution needs no message broker or worker pool for local development.
