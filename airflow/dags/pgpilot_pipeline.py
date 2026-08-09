@@ -76,6 +76,22 @@ with DAG(
         python_callable=validate_load,
     )
 
+    dbt_run = BashOperator(
+        task_id="dbt_run",
+        bash_command=(
+            f"cd {PROJECT_DIR}/dbt && "
+            "/opt/dbt-venv/bin/dbt run --profiles-dir . --target dev"
+        ),
+    )
+
+    dbt_test = BashOperator(
+        task_id="dbt_test",
+        bash_command=(
+            f"cd {PROJECT_DIR}/dbt && "
+            "/opt/dbt-venv/bin/dbt test --profiles-dir . --target dev"
+        ),
+    )
+
     backup_database = BashOperator(
         task_id="backup_database",
         # Trailing space is required: BashOperator treats a command ending in
@@ -84,4 +100,4 @@ with DAG(
         bash_command=f"cd {PROJECT_DIR} && bash scripts/backup.sh ",
     )
 
-    load_taxi_data >> validate >> backup_database
+    load_taxi_data >> validate >> dbt_run >> dbt_test >> backup_database

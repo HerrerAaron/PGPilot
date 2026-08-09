@@ -20,3 +20,12 @@ RUN pip install --no-cache-dir \
       pyarrow==24.0.0 \
       psycopg2-binary==2.9.12 \
       python-dotenv==1.2.2
+
+# Isolated venv for dbt so its dependency pins don't collide with Airflow's.
+# /opt is root-owned in the base image, so the directory is created as root
+# and handed to the airflow user before the venv itself is built.
+USER root
+RUN mkdir /opt/dbt-venv && chown airflow:root /opt/dbt-venv
+USER airflow
+RUN python -m venv /opt/dbt-venv \
+ && /opt/dbt-venv/bin/pip install --no-cache-dir "dbt-postgres==1.11.0"

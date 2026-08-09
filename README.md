@@ -1,11 +1,12 @@
 # PGPilot
 
->*A PostgreSQL operations toolkit built on real NYC taxi data, orchestrated with Apache Airflow and covering data ingestion, automated backups, health monitoring, and Continuous Integration (CI).*
+>*A PostgreSQL operations toolkit built on real NYC taxi data, orchestrated with Apache Airflow, transformed and tested with dbt, and covering data ingestion, automated backups, health monitoring, and Continuous Integration (CI).*
 
 ![CI](https://github.com/HerrerAaron/PGPilot/actions/workflows/ci.yml/badge.svg)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![Airflow](https://img.shields.io/badge/Apache_Airflow-3.3-017CEE?logo=apacheairflow&logoColor=white)
+![dbt](https://img.shields.io/badge/dbt-1.11-FF694B?logo=dbt&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-CI-2088FF?logo=github-actions&logoColor=white)
 
@@ -16,8 +17,9 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 
 - Ingested and cleaned 3.8M rows of real NYC Yellow Taxi trip data, rejecting 26,585 rows (0.69%) based on documented business logic rules
 - Bulk-loaded data using Postgres's native `COPY` command, then benchmarked index performance before and after with `EXPLAIN ANALYZE`
-- Orchestrated with Apache Airflow: a `load → validate → backup` pipeline DAG with a fail-fast data-quality gate, plus a separate 15-minute health-monitoring DAG
-- Automated `pg_dump` backups with 7-day rotation and log management, triggered by Airflow only after a load passes validation
+- Orchestrated with Apache Airflow: a five-task pipeline DAG (`load → validate → transform → test → backup`) with two fail-fast data-quality gates, plus a separate 15-minute health-monitoring DAG
+- Transformed and tested with dbt: staging models standardize the loaded tables, mart models build daily and per-zone rollups, and 13 automated tests enforce key integrity, referential integrity, and accepted values
+- Automated `pg_dump` backups with 7-day rotation and log management, triggered by Airflow only after a load passes validation and its dbt-modelled data passes every test
 - Verified restore integrity end-to-end: drops the `trips` table, restores from the dump, then confirms row counts, foreign key constraints, and indexes all match the pre-drop state
 - Monitors four database health metrics via Postgres system views with threshold-based SMTP email alerting
 - GitHub Actions CI pipeline that applies schema initialization scripts, loads synthetic data, and runs a full backup/restore cycle on every push
@@ -29,6 +31,7 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 | PostgreSQL 16 | Primary database |
 | Python, pandas, psycopg2 | Data ingestion and monitoring pipeline |
 | Apache Airflow | Pipeline orchestration and scheduling |
+| dbt (dbt-postgres) | SQL transformation, testing, and documentation |
 | Bash | Backup, restore, and log management scripts |
 | Docker, Docker Compose | Containerization |
 | GitHub Actions | CI pipeline |
@@ -41,20 +44,23 @@ graph TD
     PARQUET[NYC TLC Parquet] --> LOAD
 
     subgraph PIPELINE [pgpilot_pipeline DAG - monthly]
-        LOAD[load_taxi_data] --> VALIDATE[validate_load] --> BACKUP[backup_database]
+        LOAD[load_taxi_data] --> VALIDATE[validate_load] --> DBTRUN[dbt_run] --> DBTTEST[dbt_test] --> BACKUP[backup_database]
     end
 
     subgraph MONITORDAG [pgpilot_monitor DAG - every 15 min]
         MONITOR[run_health_monitor]
     end
 
-    LOAD --> DB[(PostgreSQL 16\ntaxidb)]
-    VALIDATE -.->|reads load_log| DB
+    LOAD --> PUBLIC[(public schema\ntrips, zones, load_log)]
+    VALIDATE -.->|reads load_log| PUBLIC
+    DBTRUN -->|reads trips, zones| PUBLIC
+    DBTRUN --> ANALYTICS[(analytics schema\nstaging + marts)]
+    DBTTEST -.->|13 data tests| ANALYTICS
     BACKUP -->|pg_dump| DUMP[backups/*.dump]
-    MONITOR --> DB
+    MONITOR --> PUBLIC
     MONITOR -->|threshold breached| EMAIL[Email Alert]
 
-    CI[GitHub Actions - on every push] -->|schema + synthetic data\nbackup + restore verify| DB
+    CI[GitHub Actions - on every push] -->|schema + synthetic data\nbackup + restore verify| PUBLIC
 ```
 
 ## Loading Data
@@ -179,7 +185,7 @@ The monitor runs every 15 minutes via Airflow's `pgpilot_monitor` DAG ([airflow/
 
 [Apache Airflow](https://airflow.apache.org/) replaces the original `cron` sidecar. Two DAGs wrap the existing scripts as tasks — [pgpilot_pipeline.py](airflow/dags/pgpilot_pipeline.py) and [pgpilot_monitor.py](airflow/dags/pgpilot_monitor.py) — without rewriting any of `load_data.py`, `backup.sh`, or `monitor.py`.
 
-**`pgpilot_pipeline`** runs monthly, matching TLC's data-drop cadence, as a real dependency chain: `load_taxi_data → validate_load → backup_database`. `validate_load` reads the latest `load_log` row and fails the DAG if the load inserted zero rows or the rejection ratio exceeds 5%, so a broken load is never backed up.
+**`pgpilot_pipeline`** runs monthly, matching TLC's data-drop cadence, as a real dependency chain: `load_taxi_data → validate_load → dbt_run → dbt_test → backup_database`. `validate_load` reads the latest `load_log` row and fails the DAG if the load inserted zero rows or the rejection ratio exceeds 5%. `dbt_test` then runs a second, complementary gate — see [Transformation & Data Quality](#transformation--data-quality-dbt) — so a backup only happens after both the raw load and the modelled data have proven sound.
 
 **`pgpilot_monitor`** runs independently every 15 minutes, since health checks need a tighter cadence than a monthly load.
 
@@ -192,6 +198,7 @@ The monitor runs every 15 minutes via Airflow's `pgpilot_monitor` DAG ([airflow/
 - **LocalExecutor**, not the official Compose file's default `CeleryExecutor` — single-machine task execution needs no message broker or worker pool for local development.
 - **A separate metadata database** (`airflow-db`) tracks DAG runs and task state, entirely distinct from `taxidb`. Confusing the two is the most common Airflow setup mistake.
 - **A custom image** ([Dockerfile.airflow](Dockerfile.airflow)) adds the same Python dependencies the scripts already need, plus the `docker` CLI so `backup.sh`'s `docker exec` calls keep working unmodified from inside the Airflow container.
+- **dbt in its own virtualenv** (`/opt/dbt-venv`), not installed alongside Airflow's own Python packages. dbt and Airflow pin overlapping dependencies, so sharing one environment is a well-known way to get a pip conflict; the DAG calls dbt by its full venv path instead.
 - **No standalone daily backup DAG.** Data only changes on a monthly load, so a backup gated on a validated load is more meaningful than a fixed 2am snapshot of an unchanged database.
 
 ### Running it
@@ -201,6 +208,60 @@ docker compose up -d --build
 ```
 
 Open `http://localhost:8080` (`airflow` / `airflow`, set in `.env`), unpause `pgpilot_pipeline` and `pgpilot_monitor`, and trigger a run from the UI. Every task's logs are captured per run — a direct upgrade over `cron`'s flat log files.
+
+## Transformation & Data Quality (dbt)
+
+[dbt](https://www.getdbt.com/) sits on top of the already-loaded data, layered rather than replacing anything. `load_data.py` still does all the cleaning, exactly as before; dbt treats the resulting `trips` and `zones` tables as **sources**, then builds further modelling and — the part that matters most here — automated data-quality tests on top. This is deliberate: it adds a real dbt transformation and testing layer over an existing Python ETL load, not a rewrite of it.
+
+Raw and modelled data are kept in separate Postgres schemas so it's always obvious which is which: `load_data.py` writes to `public`, dbt builds everything in `analytics`.
+
+### Staging and marts
+
+- **Staging** (`stg_trips`, `stg_zones`) — lightweight views that standardize column names and add a couple of derived fields (`pickup_date`, `trip_minutes`). No cleaning happens here; that already happened in Python.
+- **Marts** (`daily_trip_summary`, `zone_performance`) — analytics-ready tables, one row per day and one row per pickup zone respectively, aggregating trip volume, revenue, and averages. Materialized as tables (not views) so they're fast to query.
+
+`{{ ref(...) }}` calls in the mart SQL are what tell dbt the build order (staging before marts) and let it draw the lineage graph below — that ordering is never managed by hand.
+
+### Data-quality tests
+
+13 tests run via `dbt test`, all passing:
+
+| Test type | What it catches |
+|---|---|
+| `unique` / `not_null` on keys | Duplicate or missing trip and zone identifiers |
+| `relationships` | A trip whose pickup zone doesn't actually exist in the zone lookup — genuine referential-integrity testing |
+| `accepted_values` | A `payment_type` code outside the documented set (0 through 6) |
+| Source freshness | Whether the newest `load_log` row is over 12 hours old (warn) or 24 hours old (error) |
+
+A failing `relationships` test means the data really does have an orphaned foreign key — that's a finding to investigate, not a test to delete.
+
+![dbt_docs_lineage](images/dbt_docs_lineage.png)
+
+*dbt's generated docs site: `trips`/`zones`/`load_log` sources flowing through staging into marts, with every test attached to its model.*
+
+### Wired into the pipeline
+
+`dbt_run` and `dbt_test` are two more tasks in the `pgpilot_pipeline` DAG — see [Orchestration](#orchestration) for the full five-task chain. `validate_load` (operational: did the load run, is the reject ratio sane) and `dbt_test` (data quality: uniqueness, nulls, referential integrity, accepted values) are complementary gates, not redundant ones — a failing test at either stage stops the pipeline before anything gets backed up.
+
+### Running it locally
+
+With `DB_HOST`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD` set in your shell (`taxidb` already exposes port 5432 to the host, so `DB_HOST=localhost` reaches it directly):
+
+```
+cd dbt
+dbt run --profiles-dir .
+dbt test --profiles-dir .
+dbt source freshness --profiles-dir .
+```
+
+Preview the docs site — the same lineage graph screenshotted above:
+
+```
+dbt docs generate --profiles-dir .
+dbt docs serve --profiles-dir . --port 8081
+```
+
+Port 8081, not the default 8080, since Airflow already occupies that one.
 
 ## Continuous Integration
 
@@ -242,6 +303,13 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 - LocalExecutor vs CeleryExecutor and when a message broker is actually necessary
 - Keeping an orchestrator's own metadata database cleanly separate from the data it orchestrates
 
+**Data Modeling and Testing (dbt)**:
+- The layered approach: keeping existing Python cleaning logic in place and adding dbt as a modelling layer on top, rather than migrating cleaning into SQL
+- Sources and `ref()`-driven lineage as a replacement for manually tracking build order between models
+- Writing automated data-quality tests (`unique`, `not_null`, `relationships`, `accepted_values`) instead of relying on manual spot-checks
+- Source freshness as a way to answer "is the pipeline actually feeding fresh data?" directly from `load_log`, without any new instrumentation
+- Isolating a tool's dependencies in its own virtualenv when it shares a container with something whose pins it would otherwise conflict with
+
 **Observability**:
 - The difference between polling-based monitoring and event-driven alerting, and where polling breaks down
 - Storing metric history in a table to surface trends that a single snapshot misses
@@ -262,6 +330,8 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 - **Schema migrations.** The `init/` scripts only run on first volume creation, which works for a clean setup but doesn't support evolving the schema without dropping all data. A migrations tool like Flyway or Alembic would manage incremental schema changes safely in a long-lived production database.
 
 - **LocalExecutor doesn't scale past one machine.** Airflow tasks run in parallel via multiprocessing on a single host, which is correct for local development but caps throughput at one machine's resources. Production Airflow deployments typically use `CeleryExecutor` or `KubernetesExecutor` to distribute tasks across workers.
+
+- **dbt tests aren't wired into CI yet.** They currently run only as part of the Airflow pipeline. Running `dbt test` against an ephemeral database on every push — catching a broken model or a failing data-quality test before it merges — is the natural next step.
 
 ## Getting Started
 
@@ -295,6 +365,17 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 python scripts/load_data.py
+```
+
+**Run dbt manually** (models are built in a separate `analytics` schema, so this is safe to run alongside everything else):
+
+```
+python -m venv .dbt-venv
+.dbt-venv\Scripts\activate
+pip install "dbt-postgres==1.11.0"
+cd dbt
+dbt run --profiles-dir .
+dbt test --profiles-dir .
 ```
 
 **Run the health monitor manually:**

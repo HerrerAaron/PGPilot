@@ -10,3 +10,8 @@ v2_plan.md
 airflow/logs/
 airflow/config/
 __pycache__/
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dbt/.user.yml
+.dbt-venv/
