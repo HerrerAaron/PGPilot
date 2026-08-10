@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   deploy-dbt-models:
     runs-on: ubuntu-latest
@@ -27,3 +32,40 @@ jobs:
       - name: Deploy dbt models to the cloud database
         working-directory: dbt
         run: dbt build --profiles-dir . --target dev
+
+  publish-docs:
+    needs: deploy-dbt-models
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      PGSSLMODE: require
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - run: pip install "dbt-postgres==1.11.0"
+
+      - name: Generate docs
+        working-directory: dbt
+        run: dbt docs generate --profiles-dir . --target dev
+
+      - name: Assemble the static site
+        run: |
+          mkdir -p site
+          cp dbt/target/index.html dbt/target/manifest.json dbt/target/catalog.json site/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

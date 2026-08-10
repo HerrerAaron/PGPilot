@@ -1,0 +1,45 @@
+# Override for a fully local, one-command run — no cloud account, no
+# secrets, no AWS. Un-parks the local `postgres` service and repoints every
+# Airflow container plus Grafana at it instead of the RDS endpoint in .env.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#
+services:
+  postgres:
+    profiles: !reset []
+
+  airflow-apiserver:
+    environment:
+      DB_HOST: postgres
+      PGSSLMODE: disable
+
+  airflow-scheduler:
+    environment:
+      DB_HOST: postgres
+      PGSSLMODE: disable
+
+  airflow-dag-processor:
+    environment:
+      DB_HOST: postgres
+      PGSSLMODE: disable
+
+  airflow-triggerer:
+    environment:
+      DB_HOST: postgres
+      PGSSLMODE: disable
+
+  airflow-init:
+    environment:
+      DB_HOST: postgres
+      PGSSLMODE: disable
+
+  airflow-cli:
+    environment:
+      DB_HOST: postgres
+      PGSSLMODE: disable
+
+  grafana:
+    environment:
+      DB_HOST: postgres
+      GF_DB_SSLMODE: disable

@@ -257,6 +257,38 @@ services:
     depends_on:
       <<: *airflow-common-depends-on
 
+  # Operational dashboard: db_size_mb/active_connections/etc from db_metrics,
+  # ingestion history from load_log. Dashboard and datasource are provisioned
+  # as code (grafana/), so `docker compose up` reproduces the exact same
+  # dashboard on any machine — nothing to click through by hand.
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pgpilot-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+      DB_HOST: ${DB_HOST}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      # Same reasoning as PGSSLMODE elsewhere: RDS requires SSL, the local
+      # postgres service doesn't have it configured, so this is a separate,
+      # explicitly-set knob rather than assuming one mode.
+      GF_DB_SSLMODE: ${GF_DB_SSLMODE:-require}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata:
   airflow-db-volume:
+  grafana-data:

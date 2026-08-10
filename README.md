@@ -12,9 +12,26 @@
 ![AWS RDS](https://img.shields.io/badge/AWS-RDS-232F3E?logo=amazonaws&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-CI%2FCD-2088FF?logo=github-actions&logoColor=white)
+![Grafana](https://img.shields.io/badge/Grafana-Dashboards-F46800?logo=grafana&logoColor=white)
+
+**[📖 Live dbt Docs & Lineage Graph](https://herreraaron.github.io/PGPilot/)** — auto-published on every merge to `main`
 
 ## About
 PGPilot is a database operations toolkit built around a real-world NYC taxi dataset. The primary purpose of this project was to learn and build my skills in concepts commonly seen in DevOps roles. This includes things like containerization, continuous integration, monitoring and logging, and automation.
+
+## Demo
+
+![PGPilot demo](images/demo.gif)
+
+*One command (`docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build`) brings up Postgres, Airflow, and Grafana together — no cloud account required.*
+
+## Artifacts
+
+| Artifact | Link |
+|---|---|
+| 📖 dbt docs & lineage graph | **[Live site](https://herreraaron.github.io/PGPilot/)** — auto-published by CD, see [Documentation Site](#documentation-site-dbt-docs--github-pages) |
+| 📊 Grafana operations dashboard | See [Dashboards](#dashboards-grafana) below |
+| 🎬 Demo GIF | Above — full stack coming up from a single command |
 
 ## Features
 
@@ -27,6 +44,9 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 - Verified restore integrity end-to-end: drops the `trips` table, restores from the dump, then confirms row counts, foreign key constraints, and indexes all match the pre-drop state
 - Monitors four database health metrics via Postgres system views with threshold-based SMTP email alerting
 - Full CI/CD via GitHub Actions: CI validates the schema, dbt models, Terraform, and every DAG on push/PR; CD deploys dbt models to the live cloud database on merge to `main`, gated by branch protection
+- A five-panel Grafana dashboard, provisioned entirely as code (datasource + dashboard JSON committed to the repo), visualizing the same `db_metrics`/`load_log` tables the monitor and pipeline write to
+- dbt's generated docs site (model lineage graph, column-level descriptions, test coverage) auto-published to GitHub Pages on every merge to `main`
+- A single-command, fully local stack (`docker-compose.local.yml`) that runs Postgres, Airflow, and Grafana together with zero AWS account or secrets required
 
 ## Tech Stack
 
@@ -40,8 +60,9 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 | dbt (dbt-postgres) | SQL transformation, testing, and documentation |
 | Bash | Backup, restore, and log management scripts |
 | Docker, Docker Compose | Containerization |
-| GitHub Actions | CI/CD pipeline |
+| GitHub Actions | CI/CD pipeline, GitHub Pages publishing |
 | smtplib | SMTP email alerting |
+| Grafana | Operational dashboards, provisioned as code |
 
 ## Architecture
 
@@ -59,6 +80,8 @@ graph TD
         subgraph MONITORDAG [pgpilot_monitor DAG - every 15 min]
             MONITOR[run_health_monitor]
         end
+
+        GRAFANA[Grafana :3000\nprovisioned as code]
     end
 
     LOAD -->|SSL, network dump| PUBLIC[(public schema\ntrips, zones, load_log)]
@@ -69,12 +92,16 @@ graph TD
     BACKUP -->|pg_dump over SSL| DUMP[backups/*.dump - local]
     MONITOR --> PUBLIC
     MONITOR -->|threshold breached| EMAIL[Email Alert]
+    GRAFANA -->|reads db_metrics, load_log| PUBLIC
 
-    RDS_INFRA -.-> PUBLIC
+    RDS_INFRA -.->|default target| PUBLIC
     RDS_INFRA -.-> ANALYTICS
+    LOCAL_PG[(local Postgres\nparked behind a profile)] -.->|docker-compose.local.yml\nrepoints DB_HOST| PUBLIC
+    LOCAL_PG -.-> ANALYTICS
 
     CI[CI - every push/PR] -->|schema + synthetic data\ndbt build + test\nbackup + restore verify| CIDB[(Ephemeral CI Postgres - not RDS)]
     CD[CD - on merge to main] -->|dbt build\nGitHub Secrets| ANALYTICS
+    CD -->|dbt docs generate| PAGES[GitHub Pages\ndocs + lineage graph]
 ```
 
 ## Loading Data
@@ -195,6 +222,35 @@ When any metric crosses a threshold, an email is sent via SMTP with the metric v
 
 The monitor runs every 15 minutes via Airflow's `pgpilot_monitor` DAG ([airflow/dags/pgpilot_monitor.py](airflow/dags/pgpilot_monitor.py)), a single-task DAG kept separate from the pipeline DAG since health checks need a much tighter cadence than a monthly data load. Each run's output is captured in the Airflow UI's per-task logs.
 
+## Dashboards (Grafana)
+
+`monitor.py` and `load_data.py` already write everything a dashboard needs into `db_metrics` and `load_log` — Grafana just visualizes it. Both the datasource and the dashboard itself are **provisioned as code**: [grafana/provisioning/datasources/pgpilot.yml](grafana/provisioning/datasources/pgpilot.yml) and [grafana/provisioning/dashboards/pgpilot.yml](grafana/provisioning/dashboards/pgpilot.yml) tell Grafana what to auto-load on container start, and [grafana/dashboards/pgpilot.json](grafana/dashboards/pgpilot.json) is the dashboard definition itself — no manual clicking through the UI required to reproduce it.
+
+![grafana_dashboard](images/grafana_dashboard.png)
+
+*The PGPilot Operations dashboard: database size and connection trends over time, the longest-running query with threshold-based coloring, and the most recent health checks and ingestion runs.*
+
+### What's on it
+
+| Panel | Type | Shows |
+|---|---|---|
+| Database Size Over Time | Time series | `db_metrics.db_size_mb`, tracking growth |
+| Active Connections Over Time | Time series | `db_metrics.active_connections` against Postgres's connection cap |
+| Longest Running Query | Stat, threshold-colored | `db_metrics.longest_query_sec` — green under 30s, orange 30–60s, red above |
+| Recent Health Checks | Table, color-coded `status` column | The last 10 `db_metrics` rows |
+| Recent Ingestion Runs | Table | The last 10 `load_log` rows — rows loaded/rejected, load duration |
+
+### Design choices
+
+- **The datasource's connection target follows `DB_HOST`/`PGSSLMODE` exactly like everything else** — `${DB_HOST}` and a new `GF_DB_SSLMODE` variable (Grafana's `jsonData.sslmode` needs an explicit enum value, unlike libpq's `PGSSLMODE` which tolerates being blank) are interpolated into the provisioning YAML at container start. Point Grafana at RDS or the local Postgres container without touching a single dashboard file.
+- **A fixed `uid` on the datasource** (`pgpilot-postgres`), set explicitly rather than left to Grafana's auto-generated one, so every panel's `datasource` reference in the dashboard JSON resolves the same way on every fresh provision — no manual re-linking after a container rebuild.
+- **Hand-authored JSON, not exported from the UI.** Building it by hand keeps it fully version-controlled and reproducible — the same "as code" principle as the Terraform and Airflow DAGs elsewhere in this project.
+- **Grafana visualizes; `monitor.py` still alerts.** Grafana has no email/Slack alert rules configured here — that's deliberately kept in `monitor.py`'s existing SMTP logic (see [What Can Be Improved](#what-can-be-improved)) rather than duplicating alerting in two places.
+
+### Running it locally
+
+`http://localhost:3000`, login `admin` / `admin` (or whatever `GF_ADMIN_USER`/`GF_ADMIN_PASSWORD` are set to in `.env`). The **PGPilot** folder holds the **PGPilot Operations** dashboard, loaded automatically — no setup step.
+
 ## Orchestration
 
 [Apache Airflow](https://airflow.apache.org/) replaces the original `cron` sidecar. Two DAGs wrap the existing scripts as tasks — [pgpilot_pipeline.py](airflow/dags/pgpilot_pipeline.py) and [pgpilot_monitor.py](airflow/dags/pgpilot_monitor.py) — without rewriting any of `load_data.py`, `backup.sh`, or `monitor.py`.
@@ -221,7 +277,7 @@ The monitor runs every 15 minutes via Airflow's `pgpilot_monitor` DAG ([airflow/
 docker compose up -d --build
 ```
 
-This starts Airflow pointed at whatever `DB_HOST` in `.env` says — the RDS endpoint by default now. To work fully offline instead, add `--profile local` to bring up the local Postgres container too, and set `DB_HOST=postgres` in `.env`.
+This starts Airflow and Grafana pointed at whatever `DB_HOST` in `.env` says — the RDS endpoint by default now. For a fully offline run instead, use the local override file, which brings up the local Postgres container too and repoints every service at it automatically — no manual `.env` edits: `docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build`. See [Getting Started](#getting-started).
 
 Open `http://localhost:8080` (`airflow` / `airflow`, set in `.env`), unpause `pgpilot_pipeline` and `pgpilot_monitor`, and trigger a run from the UI. Every task's logs are captured per run — a direct upgrade over `cron`'s flat log files.
 
@@ -279,6 +335,23 @@ dbt docs serve --profiles-dir . --port 8081
 
 Port 8081, not the default 8080, since Airflow already occupies that one.
 
+## Documentation Site (dbt docs + GitHub Pages)
+
+**[📖 The live site](https://herreraaron.github.io/PGPilot/)** is the same `dbt docs` lineage graph screenshotted above, generated fresh and published automatically — no manual export, no stale copy checked into the repo.
+
+### How it's published
+
+The `publish-docs` job in [.github/workflows/cd.yml](.github/workflows/cd.yml) runs on every push to `main`, after `deploy-dbt-models` succeeds:
+
+1. `dbt docs generate --profiles-dir . --target dev` builds `index.html`, `manifest.json`, and `catalog.json` against the live database — so the published lineage graph always reflects what's actually deployed, not a snapshot from whenever someone last ran it locally.
+2. `actions/upload-pages-artifact` and `actions/deploy-pages` publish that static site to GitHub Pages.
+
+### Design choices
+
+- **Generated in CD, not committed to the repo.** The alternative — committing `target/index.html` after a local `dbt docs generate` — drifts the moment a model changes without someone remembering to regenerate it. Building it as part of CD makes staleness structurally impossible: the site is only ever as old as the last merge to `main`.
+- **A dependent job (`needs: deploy-dbt-models`), not a parallel one.** Docs generation queries live database metadata (row counts, column stats via `catalog.json`); running it before the deploy step would document the pre-merge state, not the one actually shipped.
+- **GitHub's own Pages action, not a third-party one.** `actions/upload-pages-artifact` + `actions/deploy-pages` is the officially supported, OIDC-based (`id-token: write`) path — no separate hosting account or deploy token to manage.
+
 ## Cloud Infrastructure (Terraform + AWS RDS)
 
 The database moved from a local Docker container to a managed [AWS RDS](https://aws.amazon.com/rds/) PostgreSQL 16 instance, provisioned entirely through [Terraform](https://www.terraform.io/) — no console clicks. Airflow, dbt, and every script still run locally in Docker exactly as before; only their connection target changed, since every connection was already parameterized through `DB_HOST`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` from Phases 1 and 2.
@@ -311,13 +384,13 @@ tears it all down. Since RDS bills by the hour whether or not it's in use, destr
 
 ### Local Postgres, parked not deleted
 
-The original local `postgres` service (`taxidb`) is still in `docker-compose.yml`, now behind a Compose profile so it no longer starts by default:
+The original local `postgres` service (`taxidb`) is still in `docker-compose.yml`, now behind a Compose profile so it no longer starts by default. [docker-compose.local.yml](docker-compose.local.yml) is an override file that un-parks it and repoints every other service (Airflow, Grafana) at it in one step:
 
 ```
-docker compose --profile local up -d
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
 
-Switching between local and cloud is just toggling `DB_HOST` in `.env` — nothing else in the stack changes.
+It uses Compose's `!reset` YAML tag to clear the `postgres` service's profile restriction — normal list-merge semantics can only add to a base file's values, not remove a restriction like this, so `!reset` is the mechanism that makes a single override file sufficient instead of hand-editing `.env` and re-running with `--profile local` every time. See [Getting Started](#getting-started) for the full one-command local workflow.
 
 ### Design choices and honest simplifications
 
@@ -419,6 +492,19 @@ Making CD reachable from GitHub-hosted runners (which have no fixed IP) meant th
 - Branch protection as the piece that makes "CD on merge to main" mean something — without it, nothing stops an unreviewed push from triggering a deploy
 - A live API drift bug, found by testing rather than assuming: Airflow's `DagBag` dropped the `include_examples` kwarg and moved out of `airflow.models.dagbag` between when a reference example was written and the version actually running here
 
+**Observability (Grafana)**:
+- Provisioning datasources and dashboards as versioned YAML/JSON instead of manual UI configuration — "dashboard as code," the same principle as Terraform and the Airflow DAGs
+- `${VAR}` interpolation in provisioning YAML, so the identical dashboard definition connects to either the local Postgres container or RDS depending on which environment variables are set at container start
+- Giving a datasource an explicit `uid` rather than relying on Grafana's auto-generated one, so dashboard JSON's panel-level references resolve deterministically on every fresh provision
+- Verifying each layer through Grafana's own HTTP API (`/api/datasources`, `/health`, `/api/dashboards/uid/...`, `/api/ds/query`) rather than trusting that a dashboard which loads without erroring is actually querying real data correctly
+
+**Reproducibility (Docker Compose overrides)**:
+- Compose's `!reset` YAML tag for cleanly clearing an inherited value (a profile restriction) from a base file — regular list-merge semantics can only add to a list, not remove a restriction from it
+- Designing a single override file (`docker-compose.local.yml`) so a reviewer with no AWS account gets the entire stack from one command, instead of documenting a multi-step manual `.env`-editing workflow
+
+**Static site publishing (GitHub Pages)**:
+- Wiring `dbt docs generate` output into GitHub Pages via `actions/upload-pages-artifact` and `actions/deploy-pages`, and the OIDC-based `id-token: write` permission model Pages deployment relies on instead of a stored deploy token
+- Sequencing a docs-publish job after a deploy job (`needs:`) so generated documentation reflects the database state actually shipped, not the state before the merge
 
 ## What Can Be Improved
 
@@ -432,42 +518,49 @@ Making CD reachable from GitHub-hosted runners (which have no fixed IP) meant th
 
 - **Terraform infrastructure changes aren't deployed by CD, only validated.** `terraform-validate` in CI checks the config is well-formed; actually running `terraform apply` from CD would require migrating state off the local machine onto a shared remote backend (e.g. HCP Terraform's free tier) so a GitHub Actions runner and a local `terraform` invocation don't fight over the same infrastructure. Deliberately out of scope here — the dbt-model deployment already closes the "no CD" gap without needing a new external account.
 
+- **Grafana has no alert rules configured.** The dashboard is visualization-only; threshold-based alerting is still handled entirely by `monitor.py`'s own SMTP logic (see [Health Monitoring & Alerting](#health-monitoring--alerting)). A more typical production setup would consolidate both into Grafana/Alertmanager (or a managed equivalent) instead of maintaining a bespoke alerting script alongside a dashboard tool that already has its own alerting engine.
+
+- **The dashboard only covers database-level metrics, not pipeline/task-level ones.** It visualizes `db_metrics` and `load_log`, but has no visibility into Airflow task duration, retries, or failure rates over time — that's currently only in Airflow's own UI. A more complete observability setup would pull Airflow's metadata database (or its StatsD/Prometheus metrics) into the same dashboard so DB health and pipeline health are viewed side by side.
+
 ## Getting Started
 
-### Option A — cloud (AWS RDS via Terraform)
+### Option A — one command, fully local (no AWS account needed)
 
-1. `cd terraform && terraform init && terraform plan && terraform apply` (see [Cloud Infrastructure](#cloud-infrastructure-terraform--aws-rds) — requires an AWS account with credentials configured via `aws configure`).
-2. Copy `.env.example` to `.env`, then fill in `DB_HOST`/`DB_PASSWORD` from `terraform output db_endpoint` / `terraform output -raw db_password`, and generate an Airflow Fernet key:
+1. Copy `.env.example` to `.env` and generate a Fernet key — the defaults already point everything at the local database, no other edits required:
    ```
    cp .env.example .env
    python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
    ```
-3. Build and start Airflow:
+   Paste the generated key into `FERNET_KEY` in `.env`.
+2. Bring up the entire stack — local Postgres, Airflow, and Grafana together:
    ```
-   docker compose up -d --build
-   ```
-4. Apply the schema in [init/](init/) to the new RDS instance (there's no local init-script mechanism for a managed database) — see the commands in [Cloud Infrastructure](#cloud-infrastructure-terraform--aws-rds).
-5. For CD to work: add `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` as GitHub repository secrets (**Settings → Secrets and variables → Actions**), and add a branch protection rule on `main` (**Settings → Branches**) requiring the `test-pipeline`, `terraform-validate`, and `validate-dags` checks to pass before merging. See [CI/CD](#cicd).
-
-### Option B — fully local
-
-1. Copy `.env.example` to `.env`, set `DB_HOST=postgres`, and generate a Fernet key as above.
-2. Build and start everything, including the local database (parked behind a profile by default):
-   ```
-   docker compose --profile local up -d --build
+   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
    ```
 3. Verify all containers are healthy:
    ```
    docker compose ps
    ```
-4. Connect with `psql`:
+4. Connect with `psql`, if you want to poke around directly:
    ```
    docker exec -it taxidb-postgres psql -U taxiuser -d taxidb
    ```
 
 The schema in [init/01_schema.sql](init/01_schema.sql) is applied automatically the first time the local `pgdata` volume is created. If you change the schema after the volume already exists, drop the volume (`docker compose down -v`) and start again.
 
-Either way, Airflow's UI is at `http://localhost:8080` (`airflow` / `airflow`, from `.env`). DAGs start paused — unpause `pgpilot_pipeline` and `pgpilot_monitor` and trigger a run from the UI. See [Orchestration](#orchestration) for details.
+Airflow's UI is at `http://localhost:8080` (`airflow` / `airflow`), Grafana's at `http://localhost:3000` (`admin` / `admin`, both from `.env`). DAGs start paused — unpause `pgpilot_pipeline` and `pgpilot_monitor` and trigger a run from the UI. See [Orchestration](#orchestration) and [Dashboards](#dashboards-grafana).
+
+### Option B — cloud (AWS RDS via Terraform)
+
+1. `cd terraform && terraform init && terraform plan && terraform apply` (see [Cloud Infrastructure](#cloud-infrastructure-terraform--aws-rds) — requires an AWS account with credentials configured via `aws configure`).
+2. Copy `.env.example` to `.env`, then fill in `DB_HOST`/`DB_PASSWORD` from `terraform output db_endpoint` / `terraform output -raw db_password`, and generate an Airflow Fernet key as in Option A.
+3. Build and start Airflow and Grafana, pointed at RDS:
+   ```
+   docker compose up -d --build
+   ```
+4. Apply the schema in [init/](init/) to the new RDS instance (there's no local init-script mechanism for a managed database) — see the commands in [Cloud Infrastructure](#cloud-infrastructure-terraform--aws-rds).
+5. For CD to work: add `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` as GitHub repository secrets (**Settings → Secrets and variables → Actions**), and add a branch protection rule on `main` (**Settings → Branches**) requiring the `test-pipeline`, `terraform-validate`, and `validate-dags` checks to pass before merging. See [CI/CD](#cicd). For the dbt docs site to publish, also enable **Settings → Pages → Source: GitHub Actions**.
+
+Airflow (`http://localhost:8080`) and Grafana (`http://localhost:3000`) are reachable the same way as in Option A.
 
 **Load data** — download the [April 2026 NYC TLC Yellow Taxi parquet file](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) into `orig_data/`, then:
 
