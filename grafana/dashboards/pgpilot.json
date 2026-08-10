@@ -1,0 +1,137 @@
+{
+  "uid": "pgpilot-ops",
+  "title": "PGPilot Operations",
+  "tags": ["pgpilot"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Database Size Over Time",
+      "type": "timeseries",
+      "datasource": { "type": "postgres", "uid": "pgpilot-postgres" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "decmbytes" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "pgpilot-postgres" },
+          "format": "time_series",
+          "rawSql": "SELECT checked_at AS \"time\", db_size_mb AS \"db_size_mb\" FROM db_metrics ORDER BY checked_at",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Active Connections Over Time",
+      "type": "timeseries",
+      "datasource": { "type": "postgres", "uid": "pgpilot-postgres" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "pgpilot-postgres" },
+          "format": "time_series",
+          "rawSql": "SELECT checked_at AS \"time\", active_connections AS \"active_connections\" FROM db_metrics ORDER BY checked_at",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Longest Running Query (Latest Check)",
+      "type": "stat",
+      "datasource": { "type": "postgres", "uid": "pgpilot-postgres" },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 30 },
+              { "color": "red", "value": 60 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "pgpilot-postgres" },
+          "format": "table",
+          "rawSql": "SELECT longest_query_sec FROM db_metrics ORDER BY checked_at DESC LIMIT 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Recent Health Checks",
+      "type": "table",
+      "datasource": { "type": "postgres", "uid": "pgpilot-postgres" },
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 8 },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "status" },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-background" }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "ok": { "color": "green", "index": 0 },
+                      "warning": { "color": "orange", "index": 1 },
+                      "critical": { "color": "red", "index": 2 }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "pgpilot-postgres" },
+          "format": "table",
+          "rawSql": "SELECT checked_at, db_size_mb, active_connections, longest_query_sec, table_bloat_pct, status FROM db_metrics ORDER BY checked_at DESC LIMIT 10",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Recent Ingestion Runs",
+      "type": "table",
+      "datasource": { "type": "postgres", "uid": "pgpilot-postgres" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "pgpilot-postgres" },
+          "format": "table",
+          "rawSql": "SELECT run_at, source_file, rows_loaded, rows_rejected, copy_duration_seconds, duration_seconds FROM load_log ORDER BY run_at DESC LIMIT 10",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
