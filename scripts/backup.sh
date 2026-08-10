@@ -9,7 +9,6 @@ if [ -f .env ]; then
     set -a; source .env; set +a
 fi
 
-CONTAINER_NAME="taxidb-postgres"
 BACKUP_DIR="./backups"
 LOG_FILE="./logs/backup.log"
 BACKUP_RETAIN_DAYS=7    # how long to keep old .dump files (backup rotation)
@@ -34,12 +33,9 @@ rotate_log() {
 rotate_log
 
 log "Starting backup of $DB_NAME..."
-# GitHub Actions sets CI=true; run pg_dump directly since there is no Docker socket.
-if [ "${CI:-}" = "true" ]; then
-    PGPASSWORD="$DB_PASSWORD" pg_dump -h "${DB_HOST:-localhost}" -U "$DB_USER" -d "$DB_NAME" -Fc > "$BACKUP_FILE"
-else
-    docker exec "$CONTAINER_NAME" pg_dump -U "$DB_USER" -d "$DB_NAME" -Fc > "$BACKUP_FILE"
-fi
+# Network dump against $DB_HOST (local container, or the RDS endpoint) —
+# PGSSLMODE from .env makes this encrypted automatically when DB_HOST is RDS.
+PGPASSWORD="$DB_PASSWORD" pg_dump -h "${DB_HOST:-localhost}" -U "$DB_USER" -d "$DB_NAME" -Fc > "$BACKUP_FILE"
 log "Backup complete: $BACKUP_FILE ($(du -sh "$BACKUP_FILE" | cut -f1))"
 
 # Backup rotation: delete .dump files older than BACKUP_RETAIN_DAYS.

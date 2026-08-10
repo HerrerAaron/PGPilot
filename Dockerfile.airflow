@@ -2,15 +2,20 @@ ARG AIRFLOW_VERSION=3.3.0
 FROM apache/airflow:${AIRFLOW_VERSION}
 
 # Root for system packages
+# pg_dump refuses to dump a server newer than itself, so the client must
+# match RDS's Postgres 16 — Debian's default client package can lag behind,
+# so the versioned client comes from the official PostgreSQL apt repo instead.
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      postgresql-client ca-certificates curl \
- && curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz \
-      -o /tmp/docker.tgz \
- && tar xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin docker/docker \
- && chmod +x /usr/local/bin/docker \
- && rm /tmp/docker.tgz \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release \
+ && install -d /usr/share/postgresql-common/pgdg \
+ && curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+      --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+ && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+      https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-client-16 \
  && rm -rf /var/lib/apt/lists/*
 
 # Back to the airflow user for Python packages

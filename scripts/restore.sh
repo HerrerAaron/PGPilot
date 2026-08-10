@@ -9,7 +9,6 @@ if [ -f .env ]; then
     set -a; source .env; set +a
 fi
 
-CONTAINER_NAME="taxidb-postgres"
 LOG_FILE="./logs/backup.log"
 LOG_MAX_BYTES=1048576   # rotate backup.log once it exceeds 1MB
 LOG_RETAIN_DAYS=30      # how long to keep rotated (archived) log files
@@ -42,10 +41,6 @@ rotate_log
 log "Starting restore of $DB_NAME from $BACKUP_FILE..."
 # --clean drops existing objects before recreating them from the dump;
 # --if-exists avoids erroring on objects (e.g. a manually dropped table)
-# that are already missing.
-if [ "${CI:-}" = "true" ]; then
-    PGPASSWORD="$DB_PASSWORD" pg_restore -h "${DB_HOST:-localhost}" -U "$DB_USER" -d "$DB_NAME" --clean --if-exists -Fc < "$BACKUP_FILE"
-else
-    docker exec -i "$CONTAINER_NAME" pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists -Fc < "$BACKUP_FILE"
-fi
+# that are already missing. Network connection against $DB_HOST, same as backup.sh.
+PGPASSWORD="$DB_PASSWORD" pg_restore -h "${DB_HOST:-localhost}" -U "$DB_USER" -d "$DB_NAME" --clean --if-exists -Fc < "$BACKUP_FILE"
 log "Restore complete from $BACKUP_FILE"

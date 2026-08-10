@@ -1,12 +1,14 @@
 # PGPilot
 
->*A PostgreSQL operations toolkit built on real NYC taxi data, orchestrated with Apache Airflow, transformed and tested with dbt, and covering data ingestion, automated backups, health monitoring, and Continuous Integration (CI).*
+>*A PostgreSQL operations toolkit built on real NYC taxi data — provisioned on AWS RDS with Terraform, orchestrated with Apache Airflow, transformed and tested with dbt, and covering data ingestion, automated backups, health monitoring, and Continuous Integration (CI).*
 
 ![CI](https://github.com/HerrerAaron/PGPilot/actions/workflows/ci.yml/badge.svg)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![Airflow](https://img.shields.io/badge/Apache_Airflow-3.3-017CEE?logo=apacheairflow&logoColor=white)
 ![dbt](https://img.shields.io/badge/dbt-1.11-FF694B?logo=dbt&logoColor=white)
+![Terraform](https://img.shields.io/badge/Terraform-1.15-844FBA?logo=terraform&logoColor=white)
+![AWS RDS](https://img.shields.io/badge/AWS-RDS-232F3E?logo=amazonaws&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-CI-2088FF?logo=github-actions&logoColor=white)
 
@@ -17,9 +19,10 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 
 - Ingested and cleaned 3.8M rows of real NYC Yellow Taxi trip data, rejecting 26,585 rows (0.69%) based on documented business logic rules
 - Bulk-loaded data using Postgres's native `COPY` command, then benchmarked index performance before and after with `EXPLAIN ANALYZE`
+- Provisioned on AWS RDS (PostgreSQL 16) entirely through Terraform: a subnet group, an IP-locked security group, and the instance itself from a single `terraform apply`
 - Orchestrated with Apache Airflow: a five-task pipeline DAG (`load → validate → transform → test → backup`) with two fail-fast data-quality gates, plus a separate 15-minute health-monitoring DAG
 - Transformed and tested with dbt: staging models standardize the loaded tables, mart models build daily and per-zone rollups, and 13 automated tests enforce key integrity, referential integrity, and accepted values
-- Automated `pg_dump` backups with 7-day rotation and log management, triggered by Airflow only after a load passes validation and its dbt-modelled data passes every test
+- Automated `pg_dump` backups with 7-day rotation and log management over an SSL network connection, triggered by Airflow only after a load passes validation and its dbt-modelled data passes every test
 - Verified restore integrity end-to-end: drops the `trips` table, restores from the dump, then confirms row counts, foreign key constraints, and indexes all match the pre-drop state
 - Monitors four database health metrics via Postgres system views with threshold-based SMTP email alerting
 - GitHub Actions CI pipeline that applies schema initialization scripts, loads synthetic data, and runs a full backup/restore cycle on every push
@@ -28,7 +31,9 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 
 | Tool | Role |
 |---|---|
-| PostgreSQL 16 | Primary database |
+| PostgreSQL 16 | Primary database (AWS RDS) |
+| Terraform | Infrastructure as code — provisions RDS, networking |
+| AWS (RDS, VPC) | Managed database hosting and networking |
 | Python, pandas, psycopg2 | Data ingestion and monitoring pipeline |
 | Apache Airflow | Pipeline orchestration and scheduling |
 | dbt (dbt-postgres) | SQL transformation, testing, and documentation |
@@ -41,26 +46,33 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 
 ```mermaid
 graph TD
+    TF[Terraform] -->|apply| RDS_INFRA[(AWS RDS\nPostgreSQL 16)]
+
     PARQUET[NYC TLC Parquet] --> LOAD
 
-    subgraph PIPELINE [pgpilot_pipeline DAG - monthly]
-        LOAD[load_taxi_data] --> VALIDATE[validate_load] --> DBTRUN[dbt_run] --> DBTTEST[dbt_test] --> BACKUP[backup_database]
+    subgraph LOCAL [Local machine - Docker Compose]
+        subgraph PIPELINE [pgpilot_pipeline DAG - monthly]
+            LOAD[load_taxi_data] --> VALIDATE[validate_load] --> DBTRUN[dbt_run] --> DBTTEST[dbt_test] --> BACKUP[backup_database]
+        end
+
+        subgraph MONITORDAG [pgpilot_monitor DAG - every 15 min]
+            MONITOR[run_health_monitor]
+        end
     end
 
-    subgraph MONITORDAG [pgpilot_monitor DAG - every 15 min]
-        MONITOR[run_health_monitor]
-    end
-
-    LOAD --> PUBLIC[(public schema\ntrips, zones, load_log)]
+    LOAD -->|SSL, network dump| PUBLIC[(public schema\ntrips, zones, load_log)]
     VALIDATE -.->|reads load_log| PUBLIC
     DBTRUN -->|reads trips, zones| PUBLIC
     DBTRUN --> ANALYTICS[(analytics schema\nstaging + marts)]
     DBTTEST -.->|13 data tests| ANALYTICS
-    BACKUP -->|pg_dump| DUMP[backups/*.dump]
+    BACKUP -->|pg_dump over SSL| DUMP[backups/*.dump - local]
     MONITOR --> PUBLIC
     MONITOR -->|threshold breached| EMAIL[Email Alert]
 
-    CI[GitHub Actions - on every push] -->|schema + synthetic data\nbackup + restore verify| PUBLIC
+    RDS_INFRA -.-> PUBLIC
+    RDS_INFRA -.-> ANALYTICS
+
+    CI[GitHub Actions - on every push] -->|schema + synthetic data\nbackup + restore verify\nagainst ephemeral Postgres| CIDB[(CI Postgres - not RDS)]
 ```
 
 ## Loading Data
@@ -102,7 +114,7 @@ Every run of `load_data.py` records its own row counts, rejection counts, and ti
 
 ## Backup & Recovery
 
-[scripts/backup.sh](scripts/backup.sh) and [scripts/restore.sh](scripts/restore.sh) handle backing up and recovering the database via `pg_dump`/`pg_restore`, run through `docker exec` rather than requiring Postgres client tools installed on the host.
+[scripts/backup.sh](scripts/backup.sh) and [scripts/restore.sh](scripts/restore.sh) handle backing up and recovering the database via `pg_dump`/`pg_restore`, connecting directly over the network to whatever `DB_HOST` points at — the local Postgres container or the RDS endpoint. Both scripts run from inside the Airflow container, which carries a Postgres 16 client matching RDS's engine version (see [Cloud Infrastructure](#cloud-infrastructure-terraform--aws-rds)).
 
 **Manual backup:**
 
@@ -134,7 +146,7 @@ Backup rotation (pruning old `.dump` files) and log rotation (managing `backup.l
 
 ### Scheduling
 
-Backups are triggered by Apache Airflow's `pgpilot_pipeline` DAG ([airflow/dags/pgpilot_pipeline.py](airflow/dags/pgpilot_pipeline.py)) as the last step of a `load_taxi_data → validate_load → backup_database` dependency chain, running monthly to match how often the TLC actually publishes new data. `backup_database` invokes the existing, unmodified `backup.sh` through Airflow's `BashOperator` — the underlying `docker exec`/`pg_dump` mechanics haven't changed, only what triggers them. See [Orchestration](#orchestration) for why this replaced the original `cron` sidecar.
+Backups are triggered by Apache Airflow's `pgpilot_pipeline` DAG ([airflow/dags/pgpilot_pipeline.py](airflow/dags/pgpilot_pipeline.py)) as the fifth step of the pipeline, running monthly to match how often the TLC actually publishes new data. `backup_database` invokes the existing, unmodified `backup.sh` through Airflow's `BashOperator`. See [Orchestration](#orchestration) for why this replaced the original `cron` sidecar, and [Cloud Infrastructure](#cloud-infrastructure-terraform--aws-rds) for why the transport is now a network `pg_dump` rather than `docker exec`.
 
 ## Health Monitoring & Alerting
 
@@ -197,7 +209,7 @@ The monitor runs every 15 minutes via Airflow's `pgpilot_monitor` DAG ([airflow/
 
 - **LocalExecutor**, not the official Compose file's default `CeleryExecutor` — single-machine task execution needs no message broker or worker pool for local development.
 - **A separate metadata database** (`airflow-db`) tracks DAG runs and task state, entirely distinct from `taxidb`. Confusing the two is the most common Airflow setup mistake.
-- **A custom image** ([Dockerfile.airflow](Dockerfile.airflow)) adds the same Python dependencies the scripts already need, plus the `docker` CLI so `backup.sh`'s `docker exec` calls keep working unmodified from inside the Airflow container.
+- **A custom image** ([Dockerfile.airflow](Dockerfile.airflow)) adds the same Python dependencies the scripts already need, plus a Postgres 16 client matching RDS's engine version so `backup.sh`/`restore.sh` can `pg_dump`/`pg_restore` it directly.
 - **dbt in its own virtualenv** (`/opt/dbt-venv`), not installed alongside Airflow's own Python packages. dbt and Airflow pin overlapping dependencies, so sharing one environment is a well-known way to get a pip conflict; the DAG calls dbt by its full venv path instead.
 - **No standalone daily backup DAG.** Data only changes on a monthly load, so a backup gated on a validated load is more meaningful than a fixed 2am snapshot of an unchanged database.
 
@@ -206,6 +218,8 @@ The monitor runs every 15 minutes via Airflow's `pgpilot_monitor` DAG ([airflow/
 ```
 docker compose up -d --build
 ```
+
+This starts Airflow pointed at whatever `DB_HOST` in `.env` says — the RDS endpoint by default now. To work fully offline instead, add `--profile local` to bring up the local Postgres container too, and set `DB_HOST=postgres` in `.env`.
 
 Open `http://localhost:8080` (`airflow` / `airflow`, set in `.env`), unpause `pgpilot_pipeline` and `pgpilot_monitor`, and trigger a run from the UI. Every task's logs are captured per run — a direct upgrade over `cron`'s flat log files.
 
@@ -263,6 +277,62 @@ dbt docs serve --profiles-dir . --port 8081
 
 Port 8081, not the default 8080, since Airflow already occupies that one.
 
+## Cloud Infrastructure (Terraform + AWS RDS)
+
+The database moved from a local Docker container to a managed [AWS RDS](https://aws.amazon.com/rds/) PostgreSQL 16 instance, provisioned entirely through [Terraform](https://www.terraform.io/) — no console clicks. Airflow, dbt, and every script still run locally in Docker exactly as before; only their connection target changed, since every connection was already parameterized through `DB_HOST`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` from Phases 1 and 2.
+
+### What Terraform provisions
+
+[terraform/main.tf](terraform/main.tf) creates four resources from a single `terraform apply`:
+
+- An `aws_db_instance` — PostgreSQL 16, `db.t3.micro`, 20GB `gp3` storage, single-AZ — sized to stay inside AWS's 12-month free tier.
+- An `aws_db_subnet_group` and `aws_security_group` in the account's default VPC, with the security group locked to a single IP (`my_ip_cidr` in `terraform.tfvars`) rather than open to the internet.
+- A `random_password` resource that generates the master password. This is a deliberate cost tradeoff, covered below.
+
+### Provisioning and teardown
+
+```
+cd terraform
+terraform init
+terraform plan
+terraform apply
+```
+
+`terraform output db_endpoint` and `terraform output -raw db_password` retrieve the connection details, which go into `.env` (`DB_HOST`, `DB_USER=pgpilot_admin`, `DB_PASSWORD`, `PGSSLMODE=require`).
+
+```
+terraform destroy
+```
+
+tears it all down. Since RDS bills by the hour whether or not it's in use, destroying the instance between working sessions is the actual safety mechanism — not a nice-to-have. A budget alert is also configured in the AWS Billing console as a backstop.
+
+### Local Postgres, parked not deleted
+
+The original local `postgres` service (`taxidb`) is still in `docker-compose.yml`, now behind a Compose profile so it no longer starts by default:
+
+```
+docker compose --profile local up -d
+```
+
+Switching between local and cloud is just toggling `DB_HOST` in `.env` — nothing else in the stack changes.
+
+### Design choices and honest simplifications
+
+- **`publicly_accessible = true`, locked down by security group, not network isolation.** The instance has a public endpoint, but the security group only accepts traffic from one IP. A production system would instead put RDS in a private subnet with no public route at all, reachable only from inside the VPC (e.g. via a bastion host or VPN). This is a portfolio-scale simplification, not a production pattern.
+- **The default VPC, not a custom one.** Using the account's default VPC and its existing subnets avoids hundreds of lines of networking code while still exercising the two concepts RDS actually requires: subnet groups and security groups.
+- **A broad IAM policy** (`AmazonRDSFullAccess` + `AmazonVPCFullAccess`) on the Terraform user, rather than a least-privilege custom policy scoped to exactly the actions this project needs. Standard practice for a single-developer portfolio project; not what a production IAM setup would look like.
+- **Password generated by Terraform, not AWS Secrets Manager.** This is the one worth explaining in full, next.
+
+### Secrets management tradeoff
+
+The RDS master password is generated by Terraform's `random_password` resource and stored in local, gitignored Terraform state — not in AWS Secrets Manager. This was a deliberate choice: Secrets Manager charges roughly $0.40/month per secret, which is a real (if small) recurring cost, and this project's goal was to stay inside the free tier with **no recurring cost at all**.
+
+The tradeoff: the plaintext password lives in `terraform.tfstate`, which never leaves the local machine and is gitignored, but is consequently a single file that must not be lost or committed. A production-grade hardening step would be `manage_master_user_password = true` on the `aws_db_instance` resource, letting RDS generate and auto-rotate the credential inside Secrets Manager, with the application reading it at runtime instead of from an environment file. That's the natural next step if this were a real production database rather than a portfolio project optimized to run at zero cost.
+
+### A real bug this surfaced: SSL and Airflow's own metadata database
+
+Setting `PGSSLMODE=require` globally so `pg_dump`/`pg_restore`/psycopg2 connect to RDS over SSL has a side effect: it's a process-wide libpq setting, so it also applies to Airflow's *own* internal connection to its metadata database (`airflow-db`), a plain local Postgres container with no SSL configured at all — breaking every Airflow container's health check with `server does not support SSL, but SSL was required`. The fix was scoping `sslmode=disable` explicitly into `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN`'s connection string, since an explicit value in a connection string always overrides the environment variable. `PGSSLMODE=require` still applies correctly to every connection the pipeline scripts make to RDS — just not to Airflow's unrelated internal one.
+
 ## Continuous Integration
 
 [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push and pull request. It spins up a real Postgres 16 instance, builds the database schema from `/init`, loads 1,000 synthetic rows, runs the health monitor in dry-run mode, and runs a full backup and restore verification cycle.
@@ -310,6 +380,13 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 - Source freshness as a way to answer "is the pipeline actually feeding fresh data?" directly from `load_log`, without any new instrumentation
 - Isolating a tool's dependencies in its own virtualenv when it shares a container with something whose pins it would otherwise conflict with
 
+**Cloud and Infrastructure as Code (Terraform, AWS)**:
+- Declarative provisioning with Terraform: providers, resources, data sources, variables, outputs, and the `init`/`plan`/`apply`/`destroy` lifecycle
+- Reading a `terraform plan` diff critically before applying it, especially once real billing is on the line
+- AWS RDS and the minimum VPC concepts it actually forces you to understand: subnet groups and security groups
+- A real cost-vs-security tradeoff, made and documented rather than hidden: a Terraform-generated password in gitignored state instead of AWS Secrets Manager, to stay at zero recurring cost
+- Why a process-wide environment variable (`PGSSLMODE`) can break a connection you didn't intend to affect, and why an explicit value in a connection string overrides an environment default
+
 **Observability**:
 - The difference between polling-based monitoring and event-driven alerting, and where polling breaks down
 - Storing metric history in a table to surface trends that a single snapshot misses
@@ -335,15 +412,26 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 
 ## Getting Started
 
-1. Copy `.env.example` to `.env`, fill in your credentials, and generate an Airflow Fernet key:
+### Option A — cloud (AWS RDS via Terraform)
+
+1. `cd terraform && terraform init && terraform plan && terraform apply` (see [Cloud Infrastructure](#cloud-infrastructure-terraform--aws-rds) — requires an AWS account and a `terraform.tfvars` with your IP).
+2. Copy `.env.example` to `.env`, then fill in `DB_HOST`/`DB_PASSWORD` from `terraform output db_endpoint` / `terraform output -raw db_password`, and generate an Airflow Fernet key:
    ```
    cp .env.example .env
    python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
    ```
-   Paste the generated value into `.env` as `FERNET_KEY`.
-2. Build and start the database and Airflow:
+3. Build and start Airflow:
    ```
    docker compose up -d --build
+   ```
+4. Apply the schema in [init/](init/) to the new RDS instance (there's no local init-script mechanism for a managed database) — see the commands in [Cloud Infrastructure](#cloud-infrastructure-terraform--aws-rds).
+
+### Option B — fully local
+
+1. Copy `.env.example` to `.env`, set `DB_HOST=postgres`, and generate a Fernet key as above.
+2. Build and start everything, including the local database (parked behind a profile by default):
+   ```
+   docker compose --profile local up -d --build
    ```
 3. Verify all containers are healthy:
    ```
@@ -354,9 +442,9 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
    docker exec -it taxidb-postgres psql -U taxiuser -d taxidb
    ```
 
-The schema in [init/01_schema.sql](init/01_schema.sql) is applied automatically the first time the `pgdata` volume is created. If you change the schema after the volume already exists, drop the volume (`docker compose down -v`) and start again.
+The schema in [init/01_schema.sql](init/01_schema.sql) is applied automatically the first time the local `pgdata` volume is created. If you change the schema after the volume already exists, drop the volume (`docker compose down -v`) and start again.
 
-Airflow's UI is at `http://localhost:8080` (`airflow` / `airflow`, from `.env`). DAGs start paused — unpause `pgpilot_pipeline` and `pgpilot_monitor` and trigger a run from the UI. See [Orchestration](#orchestration) for details.
+Either way, Airflow's UI is at `http://localhost:8080` (`airflow` / `airflow`, from `.env`). DAGs start paused — unpause `pgpilot_pipeline` and `pgpilot_monitor` and trigger a run from the UI. See [Orchestration](#orchestration) for details.
 
 **Load data** — download the [April 2026 NYC TLC Yellow Taxi parquet file](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) into `orig_data/`, then:
 

@@ -2,8 +2,9 @@ name: pgpilot
 
 x-airflow-common:
   &airflow-common
-  # Built from a custom image with your pipeline's Python deps and the
-  # docker CLI, instead of the stock apache/airflow image (see Dockerfile.airflow).
+  # Built from a custom image with your pipeline's Python deps and a
+  # matching-version Postgres client, instead of the stock apache/airflow
+  # image (see Dockerfile.airflow).
   build:
     context: .
     dockerfile: Dockerfile.airflow
@@ -13,7 +14,11 @@ x-airflow-common:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+    # ?sslmode=disable is required here regardless of PGSSLMODE below: this
+    # is Airflow's own metadata db (a plain local Postgres, no SSL configured),
+    # not the pipeline's taxidb/RDS connection. An explicit sslmode in the
+    # connection string always overrides the process-wide PGSSLMODE env var.
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow?sslmode=disable
     AIRFLOW__CORE__FERNET_KEY: ${FERNET_KEY}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
@@ -24,11 +29,14 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
     # Same variables load_data.py, backup.sh, and monitor.py already read
-    # from .env outside of Airflow — DAG tasks need them too.
-    DB_HOST: postgres
+    # from .env outside of Airflow — DAG tasks need them too. DB_HOST now
+    # points at whatever .env says: the local `postgres` service, or the
+    # Terraform-provisioned RDS endpoint once migrated (see terraform/).
+    DB_HOST: ${DB_HOST}
     DB_NAME: ${DB_NAME}
     DB_USER: ${DB_USER}
     DB_PASSWORD: ${DB_PASSWORD}
+    PGSSLMODE: ${PGSSLMODE:-}
     ALERT_EMAIL: ${ALERT_EMAIL}
     SMTP_USER: ${SMTP_USER}
     SMTP_PASSWORD: ${SMTP_PASSWORD}
@@ -38,7 +46,6 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-./airflow}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-./airflow}/plugins:/opt/airflow/plugins
     - .:/opt/pgpilot                              # whole project, so scripts run in place
-    - /var/run/docker.sock:/var/run/docker.sock   # lets backup.sh docker exec into taxidb-postgres
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -46,9 +53,14 @@ x-airflow-common:
       condition: service_healthy
 
 services:
+  # Local taxidb, parked behind a profile now that RDS (terraform/) is the
+  # default target. Start it explicitly with `docker compose --profile local up -d`
+  # for offline development; toggle DB_HOST in .env to switch which one the
+  # pipeline actually talks to.
   postgres:
     image: postgres:16 # use pg version 16 — this is taxidb; unrelated to Airflow's own metadata db (airflow-db below)
     container_name: taxidb-postgres
+    profiles: ["local"]
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DB_NAME}
