@@ -42,5 +42,17 @@ log "Starting restore of $DB_NAME from $BACKUP_FILE..."
 # --clean drops existing objects before recreating them from the dump;
 # --if-exists avoids erroring on objects (e.g. a manually dropped table)
 # that are already missing. Network connection against $DB_HOST, same as backup.sh.
+#
+# pg_restore's exit code doesn't distinguish "fully clean" from "completed,
+# but a session-level SET it emitted wasn't recognized by this server version"
+# (e.g. transaction_timeout, a GUC that only exists on Postgres 17+) — it
+# prints "errors ignored on restore: N" and continues either way, so set -e
+# alone can't tell those apart. Capture the exit code instead of aborting on it.
+set +e
 PGPASSWORD="$DB_PASSWORD" pg_restore -h "${DB_HOST:-localhost}" -U "$DB_USER" -d "$DB_NAME" --clean --if-exists -Fc < "$BACKUP_FILE"
+RESTORE_EXIT=$?
+set -e
+if [ "$RESTORE_EXIT" -ne 0 ]; then
+    log "pg_restore exited with warnings (code $RESTORE_EXIT) — see output above for which errors it considered survivable"
+fi
 log "Restore complete from $BACKUP_FILE"

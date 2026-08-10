@@ -1,11 +1,11 @@
-name: Database CI
+name: CI
 
 on:
   push:
   pull_request:
 
 jobs:
-  test:
+  test-pipeline:
     runs-on: ubuntu-latest
 
     services:
@@ -28,6 +28,7 @@ jobs:
       DB_USER: taxiuser
       DB_PASSWORD: testpass
       DB_HOST: localhost
+      PGSSLMODE: disable # the CI Postgres service has no SSL configured; the cloud DB does
 
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +41,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
+          pip install "dbt-postgres==1.11.0"
           sudo apt-get install -y postgresql-client
 
       - name: Apply schema
@@ -52,6 +54,10 @@ jobs:
 
       - name: Load sample data
         run: python scripts/load_data.py --sample 1000
+
+      - name: Build and test dbt models
+        working-directory: dbt
+        run: dbt build --profiles-dir . --target dev
 
       - name: Run monitor dry-run
         run: python scripts/monitor.py --dry-run
@@ -83,3 +89,39 @@ jobs:
           echo "Indexes: $IDX_COUNT restored"
 
           echo "Restore fully verified"
+
+  terraform-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Check formatting
+        working-directory: terraform
+        run: terraform fmt -check -recursive
+      - name: Initialize without a backend
+        working-directory: terraform
+        run: terraform init -backend=false
+      - name: Validate the configuration
+        working-directory: terraform
+        run: terraform validate
+
+  validate-dags:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install Airflow and pipeline deps
+        run: |
+          pip install "apache-airflow==3.3.0" \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.3.0/constraints-3.14.txt"
+          pip install psycopg2-binary
+      - name: Check every DAG imports cleanly
+        run: |
+          python - <<'PY'
+          from airflow.dag_processing.dagbag import DagBag
+          bag = DagBag(dag_folder="airflow/dags")
+          assert not bag.import_errors, bag.import_errors
+          print(f"OK: {len(bag.dags)} DAG(s) imported with no errors")
+          PY

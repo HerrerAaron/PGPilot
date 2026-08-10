@@ -16,11 +16,6 @@ variable "db_username" {
   default     = "pgpilot_admin"
 }
 
-variable "my_ip_cidr" {
-  description = "Your public IP in CIDR form, e.g. 203.0.113.4/32"
-  type        = string
-}
-
 variable "instance_class" {
   description = "RDS instance class (free-tier eligible)"
   type        = string

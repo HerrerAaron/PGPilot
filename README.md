@@ -1,8 +1,9 @@
 # PGPilot
 
->*A PostgreSQL operations toolkit built on real NYC taxi data — provisioned on AWS RDS with Terraform, orchestrated with Apache Airflow, transformed and tested with dbt, and covering data ingestion, automated backups, health monitoring, and Continuous Integration (CI).*
+>*A PostgreSQL operations toolkit built on real NYC taxi data — provisioned on AWS RDS with Terraform, orchestrated with Apache Airflow, transformed and tested with dbt, and covering data ingestion, automated backups, health monitoring, and a full CI/CD pipeline via GitHub Actions.*
 
 ![CI](https://github.com/HerrerAaron/PGPilot/actions/workflows/ci.yml/badge.svg)
+![CD](https://github.com/HerrerAaron/PGPilot/actions/workflows/cd.yml/badge.svg)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![Airflow](https://img.shields.io/badge/Apache_Airflow-3.3-017CEE?logo=apacheairflow&logoColor=white)
@@ -10,7 +11,7 @@
 ![Terraform](https://img.shields.io/badge/Terraform-1.15-844FBA?logo=terraform&logoColor=white)
 ![AWS RDS](https://img.shields.io/badge/AWS-RDS-232F3E?logo=amazonaws&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
-![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-CI-2088FF?logo=github-actions&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-CI%2FCD-2088FF?logo=github-actions&logoColor=white)
 
 ## About
 PGPilot is a database operations toolkit built around a real-world NYC taxi dataset. The primary purpose of this project was to learn and build my skills in concepts commonly seen in DevOps roles. This includes things like containerization, continuous integration, monitoring and logging, and automation.
@@ -19,13 +20,13 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 
 - Ingested and cleaned 3.8M rows of real NYC Yellow Taxi trip data, rejecting 26,585 rows (0.69%) based on documented business logic rules
 - Bulk-loaded data using Postgres's native `COPY` command, then benchmarked index performance before and after with `EXPLAIN ANALYZE`
-- Provisioned on AWS RDS (PostgreSQL 16) entirely through Terraform: a subnet group, an IP-locked security group, and the instance itself from a single `terraform apply`
+- Provisioned on AWS RDS (PostgreSQL 16) entirely through Terraform: a subnet group, a security group, an SSL-enforcing parameter group, and the instance itself from a single `terraform apply`
 - Orchestrated with Apache Airflow: a five-task pipeline DAG (`load → validate → transform → test → backup`) with two fail-fast data-quality gates, plus a separate 15-minute health-monitoring DAG
 - Transformed and tested with dbt: staging models standardize the loaded tables, mart models build daily and per-zone rollups, and 13 automated tests enforce key integrity, referential integrity, and accepted values
 - Automated `pg_dump` backups with 7-day rotation and log management over an SSL network connection, triggered by Airflow only after a load passes validation and its dbt-modelled data passes every test
 - Verified restore integrity end-to-end: drops the `trips` table, restores from the dump, then confirms row counts, foreign key constraints, and indexes all match the pre-drop state
 - Monitors four database health metrics via Postgres system views with threshold-based SMTP email alerting
-- GitHub Actions CI pipeline that applies schema initialization scripts, loads synthetic data, and runs a full backup/restore cycle on every push
+- Full CI/CD via GitHub Actions: CI validates the schema, dbt models, Terraform, and every DAG on push/PR; CD deploys dbt models to the live cloud database on merge to `main`, gated by branch protection
 
 ## Tech Stack
 
@@ -39,7 +40,7 @@ PGPilot is a database operations toolkit built around a real-world NYC taxi data
 | dbt (dbt-postgres) | SQL transformation, testing, and documentation |
 | Bash | Backup, restore, and log management scripts |
 | Docker, Docker Compose | Containerization |
-| GitHub Actions | CI pipeline |
+| GitHub Actions | CI/CD pipeline |
 | smtplib | SMTP email alerting |
 
 ## Architecture
@@ -72,7 +73,8 @@ graph TD
     RDS_INFRA -.-> PUBLIC
     RDS_INFRA -.-> ANALYTICS
 
-    CI[GitHub Actions - on every push] -->|schema + synthetic data\nbackup + restore verify\nagainst ephemeral Postgres| CIDB[(CI Postgres - not RDS)]
+    CI[CI - every push/PR] -->|schema + synthetic data\ndbt build + test\nbackup + restore verify| CIDB[(Ephemeral CI Postgres - not RDS)]
+    CD[CD - on merge to main] -->|dbt build\nGitHub Secrets| ANALYTICS
 ```
 
 ## Loading Data
@@ -283,10 +285,11 @@ The database moved from a local Docker container to a managed [AWS RDS](https://
 
 ### What Terraform provisions
 
-[terraform/main.tf](terraform/main.tf) creates four resources from a single `terraform apply`:
+[terraform/main.tf](terraform/main.tf) creates five resources from a single `terraform apply`:
 
 - An `aws_db_instance` — PostgreSQL 16, `db.t3.micro`, 20GB `gp3` storage, single-AZ — sized to stay inside AWS's 12-month free tier.
-- An `aws_db_subnet_group` and `aws_security_group` in the account's default VPC, with the security group locked to a single IP (`my_ip_cidr` in `terraform.tfvars`) rather than open to the internet.
+- An `aws_db_subnet_group` and `aws_security_group` in the account's default VPC.
+- An `aws_db_parameter_group` that sets `rds.force_ssl = 1`, making SSL mandatory at the server rather than merely requested by the client.
 - A `random_password` resource that generates the master password. This is a deliberate cost tradeoff, covered below.
 
 ### Provisioning and teardown
@@ -318,7 +321,7 @@ Switching between local and cloud is just toggling `DB_HOST` in `.env` — nothi
 
 ### Design choices and honest simplifications
 
-- **`publicly_accessible = true`, locked down by security group, not network isolation.** The instance has a public endpoint, but the security group only accepts traffic from one IP. A production system would instead put RDS in a private subnet with no public route at all, reachable only from inside the VPC (e.g. via a bastion host or VPN). This is a portfolio-scale simplification, not a production pattern.
+- **`publicly_accessible = true`, secured by password + SSL rather than network isolation.** Phase 3 locked the security group to a single home IP; Phase 4 opened it to `0.0.0.0/0` so GitHub-hosted CD runners (no fixed IP) can reach it too — see [CI/CD](#cicd) for the full reasoning and the `rds.force_ssl` hardening that went with it. A production system would instead put RDS in a private subnet with no public route at all, reachable only from inside the VPC (e.g. via a bastion host, VPN, or a self-hosted runner inside the VPC). This is a portfolio-scale simplification, not a production pattern.
 - **The default VPC, not a custom one.** Using the account's default VPC and its existing subnets avoids hundreds of lines of networking code while still exercising the two concepts RDS actually requires: subnet groups and security groups.
 - **A broad IAM policy** (`AmazonRDSFullAccess` + `AmazonVPCFullAccess`) on the Terraform user, rather than a least-privilege custom policy scoped to exactly the actions this project needs. Standard practice for a single-developer portfolio project; not what a production IAM setup would look like.
 - **Password generated by Terraform, not AWS Secrets Manager.** This is the one worth explaining in full, next.
@@ -333,17 +336,31 @@ The tradeoff: the plaintext password lives in `terraform.tfstate`, which never l
 
 Setting `PGSSLMODE=require` globally so `pg_dump`/`pg_restore`/psycopg2 connect to RDS over SSL has a side effect: it's a process-wide libpq setting, so it also applies to Airflow's *own* internal connection to its metadata database (`airflow-db`), a plain local Postgres container with no SSL configured at all — breaking every Airflow container's health check with `server does not support SSL, but SSL was required`. The fix was scoping `sslmode=disable` explicitly into `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN`'s connection string, since an explicit value in a connection string always overrides the environment variable. `PGSSLMODE=require` still applies correctly to every connection the pipeline scripts make to RDS — just not to Airflow's unrelated internal one.
 
-## Continuous Integration
+## CI/CD
 
-[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push and pull request. It spins up a real Postgres 16 instance, builds the database schema from `/init`, loads 1,000 synthetic rows, runs the health monitor in dry-run mode, and runs a full backup and restore verification cycle.
+PGPilot has a genuine CI/CD pipeline through GitHub Actions — two workflows with distinct jobs, distinct triggers, and distinct scope. Precision matters here: CI proves nothing is broken; CD is the only stage that touches the real cloud database.
 
-### Synthetic data for CI
+### Continuous Integration — [.github/workflows/ci.yml](.github/workflows/ci.yml)
 
-The original dataset is a 600MB parquet file that is gitignored. `load_data.py` generates synthetic rows deterministically and inserts them through the same COPY pipeline, so CI exercises the real load path without committing large files to the repo.
+Runs on every push and pull request, against a throwaway database, using no secrets. Three independent jobs, so a failure points straight at the cause:
 
-### Backup and restore verification
+| Job | What it checks |
+|---|---|
+| `test-pipeline` | Spins up an ephemeral Postgres 16, applies the schema, loads 1,000 synthetic rows, runs `dbt build` (models + all 13 tests) against it, dry-runs the health monitor, and runs a full backup/restore verification cycle |
+| `terraform-validate` | `terraform fmt -check` and `terraform validate` against [terraform/](terraform/) — no AWS credentials needed, `-backend=false` means it never touches real state |
+| `validate-dags` | Imports every DAG in [airflow/dags/](airflow/dags/) through Airflow's `DagBag` and fails on any import error, so a typo in a DAG can never reach `main` silently |
 
-After backup.sh produces a dump, the pipeline drops the trips table, restores from the dump, then confirms that row counts, foreign key constraints, and indexes all match the pre-drop state.
+**Synthetic data for CI.** The original dataset is a 600MB parquet file that is gitignored. `load_data.py --sample N` generates synthetic rows deterministically and inserts them through the same `COPY` pipeline, so CI exercises the real load path without committing large files to the repo.
+
+### Continuous Deployment — [.github/workflows/cd.yml](.github/workflows/cd.yml)
+
+Runs only on a push to `main` — which, with branch protection requiring CI to pass first, means only after a reviewed pull request merges. It connects to the real cloud RDS instance using credentials stored as GitHub Secrets and runs `dbt build`, rebuilding and re-testing every staging and mart model directly against production. Because `dbt build` runs the tests too, a merge that would produce bad data **fails the deploy** rather than silently shipping it.
+
+**Being precise about what "deploy" means here:** since Airflow runs locally rather than on a cloud server, CD does not redeploy a running application — there is nothing cloud-hosted to redeploy. What ships on every merge to `main` is the **dbt models**, rebuilt against the live database. "CD that deploys updated dbt models to the cloud database on merge to main" is the accurate claim; "CD that deploys the application" would not be.
+
+### Security tradeoff this enabled
+
+Making CD reachable from GitHub-hosted runners (which have no fixed IP) meant the RDS security group could no longer be locked to a single home IP as it was in Phase 3. It's now open on port 5432 to any source, with the security boundary moved to the database layer instead: the Terraform-generated password, `PGSSLMODE=require` on every pipeline connection, and `rds.force_ssl=1` set at the server via a DB parameter group so SSL is mandatory regardless of what a connecting client requests. This is the same posture a public endpoint like Neon's uses by default — password- and SSL-secured rather than network-isolated.
 
 ## What I Learned
 
@@ -361,6 +378,7 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 - Using `pg_dump -Fc` (custom format) for compressed, restore-friendly dumps vs plain SQL exports
 - `pg_restore --clean --if-exists` for safe restores that handle partially dropped schemas
 - Separating backup rotation from log rotation since they have different retention windows and failure modes
+- `pg_restore`'s exit code conflates "completed, but a session-level setting the target version didn't recognize was ignored" with genuine failure — its own "errors ignored on restore: N" summary is the real signal, and `set -e` alone can't tell the two apart
 
 **Docker and Containerization**:
 - The sidecar pattern for running an auxiliary process (`cron`, then Airflow) alongside a database without modifying the database image
@@ -392,10 +410,14 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 - Storing metric history in a table to surface trends that a single snapshot misses
 - Using `--dry-run` flags to test alert logic safely in any environment
 
-**CI**:
+**CI/CD**:
 - Why environment parity matters (i.e. code that passes locally but fails in CI usually means an undeclared dependency)
 - Client-side vs server-side `COPY` and why they behave differently across environments
 - Using `CI=true` as a branch point to adapt scripts without duplicating logic
+- The practical difference between CI and CD, and why "deploys the dbt models" and "deploys the application" are not interchangeable claims for this project
+- Validating Terraform (`fmt`, `validate`) and Airflow DAGs (`DagBag` import) as CI gates, not just application code
+- Branch protection as the piece that makes "CD on merge to main" mean something — without it, nothing stops an unreviewed push from triggering a deploy
+- A live API drift bug, found by testing rather than assuming: Airflow's `DagBag` dropped the `include_examples` kwarg and moved out of `airflow.models.dagbag` between when a reference example was written and the version actually running here
 
 
 ## What Can Be Improved
@@ -408,13 +430,13 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
 
 - **LocalExecutor doesn't scale past one machine.** Airflow tasks run in parallel via multiprocessing on a single host, which is correct for local development but caps throughput at one machine's resources. Production Airflow deployments typically use `CeleryExecutor` or `KubernetesExecutor` to distribute tasks across workers.
 
-- **dbt tests aren't wired into CI yet.** They currently run only as part of the Airflow pipeline. Running `dbt test` against an ephemeral database on every push — catching a broken model or a failing data-quality test before it merges — is the natural next step.
+- **Terraform infrastructure changes aren't deployed by CD, only validated.** `terraform-validate` in CI checks the config is well-formed; actually running `terraform apply` from CD would require migrating state off the local machine onto a shared remote backend (e.g. HCP Terraform's free tier) so a GitHub Actions runner and a local `terraform` invocation don't fight over the same infrastructure. Deliberately out of scope here — the dbt-model deployment already closes the "no CD" gap without needing a new external account.
 
 ## Getting Started
 
 ### Option A — cloud (AWS RDS via Terraform)
 
-1. `cd terraform && terraform init && terraform plan && terraform apply` (see [Cloud Infrastructure](#cloud-infrastructure-terraform--aws-rds) — requires an AWS account and a `terraform.tfvars` with your IP).
+1. `cd terraform && terraform init && terraform plan && terraform apply` (see [Cloud Infrastructure](#cloud-infrastructure-terraform--aws-rds) — requires an AWS account with credentials configured via `aws configure`).
 2. Copy `.env.example` to `.env`, then fill in `DB_HOST`/`DB_PASSWORD` from `terraform output db_endpoint` / `terraform output -raw db_password`, and generate an Airflow Fernet key:
    ```
    cp .env.example .env
@@ -425,6 +447,7 @@ After backup.sh produces a dump, the pipeline drops the trips table, restores fr
    docker compose up -d --build
    ```
 4. Apply the schema in [init/](init/) to the new RDS instance (there's no local init-script mechanism for a managed database) — see the commands in [Cloud Infrastructure](#cloud-infrastructure-terraform--aws-rds).
+5. For CD to work: add `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` as GitHub repository secrets (**Settings → Secrets and variables → Actions**), and add a branch protection rule on `main` (**Settings → Branches**) requiring the `test-pipeline`, `terraform-validate`, and `validate-dags` checks to pass before merging. See [CI/CD](#cicd).
 
 ### Option B — fully local
 

@@ -1,0 +1,29 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy-dbt-models:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      PGSSLMODE: require # the cloud database requires SSL
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dbt
+        run: pip install "dbt-postgres==1.11.0"
+
+      - name: Deploy dbt models to the cloud database
+        working-directory: dbt
+        run: dbt build --profiles-dir . --target dev
