@@ -10,6 +10,8 @@ datasources:
     secureJsonData:
       password: ${DB_PASSWORD}
     jsonData:
+      database: ${DB_NAME}
       sslmode: ${GF_DB_SSLMODE}
       postgresVersion: 1600
     isDefault: true
+    editable: true

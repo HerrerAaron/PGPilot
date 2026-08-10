@@ -12,32 +12,32 @@ services:
   airflow-apiserver:
     environment:
       DB_HOST: postgres
-      PGSSLMODE:
+      PGSSLMODE: disable
 
   airflow-scheduler:
     environment:
       DB_HOST: postgres
-      PGSSLMODE:
+      PGSSLMODE: disable
 
   airflow-dag-processor:
     environment:
       DB_HOST: postgres
-      PGSSLMODE:
+      PGSSLMODE: disable
 
   airflow-triggerer:
     environment:
       DB_HOST: postgres
-      PGSSLMODE:
+      PGSSLMODE: disable
 
   airflow-init:
     environment:
       DB_HOST: postgres
-      PGSSLMODE:
+      PGSSLMODE: disable
 
   airflow-cli:
     environment:
       DB_HOST: postgres
-      PGSSLMODE:
+      PGSSLMODE: disable
 
   grafana:
     environment:
