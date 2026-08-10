@@ -1,0 +1,17 @@
+version: 2
+
+sources:
+  - name: taxidb
+    description: "Raw tables populated by load_data.py — the Python ingestion layer."
+    schema: public
+    tables:
+      - name: trips
+        description: "Cleaned NYC yellow-cab trip records, loaded and validated in Python."
+      - name: zones
+        description: "TLC taxi-zone lookup: location id to borough and zone."
+      - name: load_log
+        description: "One row per ingestion run, written by load_data.py."
+        loaded_at_field: run_at
+        freshness:
+          warn_after: {count: 12, period: hour}
+          error_after: {count: 24, period: hour}

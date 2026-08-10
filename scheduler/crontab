@@ -1,6 +1,0 @@
-DB_HOST=postgres
-
-# minute hour day month weekday user  command
-0 2 * * *    root /app/scripts/backup.sh >> /app/logs/cron.log 2>&1
-0 9 * * 0    root tail -n 20 /app/logs/backup.log >> /app/logs/weekly_summary.log 2>&1
-*/15 * * * * root python3 /app/scripts/monitor.py >> /app/logs/monitor.log 2>&1

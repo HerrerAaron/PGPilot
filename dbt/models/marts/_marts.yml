@@ -1,0 +1,24 @@
+version: 2
+
+models:
+  - name: daily_trip_summary
+    description: "One row per day: trip volume, revenue, and trip averages."
+    columns:
+      - name: pickup_date
+        description: "Calendar date of the trips."
+        data_tests:
+          - not_null
+          - unique
+      - name: trip_count
+        data_tests:
+          - not_null
+
+  - name: zone_performance
+    description: "Per pickup-zone aggregates: volume, revenue, and averages."
+    columns:
+      - name: location_id
+        data_tests:
+          - not_null
+      - name: trip_count
+        data_tests:
+          - not_null

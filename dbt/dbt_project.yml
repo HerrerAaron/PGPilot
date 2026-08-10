@@ -1,0 +1,13 @@
+name: 'pgpilot'
+version: '2.0.0'
+profile: 'pgpilot'
+
+model-paths: ["models"]
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  pgpilot:
+    staging:
+      +materialized: view      # staging = lightweight views
+    marts:
+      +materialized: table     # marts = tables, so the dashboard reads fast

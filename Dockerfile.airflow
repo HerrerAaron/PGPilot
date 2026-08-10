@@ -1,0 +1,36 @@
+ARG AIRFLOW_VERSION=3.3.0
+FROM apache/airflow:${AIRFLOW_VERSION}
+
+# Root for system packages
+# pg_dump refuses to dump a server newer than itself, so the client must
+# match RDS's Postgres 16 — Debian's default client package can lag behind,
+# so the versioned client comes from the official PostgreSQL apt repo instead.
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release \
+ && install -d /usr/share/postgresql-common/pgdg \
+ && curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+      --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+ && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+      https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-client-16 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Back to the airflow user for Python packages
+USER airflow
+RUN pip install --no-cache-dir \
+      pandas==3.0.3 \
+      pyarrow==24.0.0 \
+      psycopg2-binary==2.9.12 \
+      python-dotenv==1.2.2
+
+# Isolated venv for dbt so its dependency pins don't collide with Airflow's.
+# /opt is root-owned in the base image, so the directory is created as root
+# and handed to the airflow user before the venv itself is built.
+USER root
+RUN mkdir /opt/dbt-venv && chown airflow:root /opt/dbt-venv
+USER airflow
+RUN python -m venv /opt/dbt-venv \
+ && /opt/dbt-venv/bin/pip install --no-cache-dir "dbt-postgres==1.11.0"

@@ -14,7 +14,9 @@ load_dotenv()
 POSTGRES_PORT = 5432
 
 DB_CONFIG = {
-    "host": "localhost",
+    # localhost when run from the host; docker-compose sets DB_HOST=postgres
+    # for the scheduler container and Airflow tasks
+    "host": os.environ.get("DB_HOST", "localhost"),
     "port": POSTGRES_PORT,
     "dbname": os.environ["DB_NAME"],
     "user": os.environ["DB_USER"],
