@@ -3,7 +3,6 @@
 > *A PostgreSQL operations platform built on 3.8M real NYC taxi trip records — provisioned on AWS RDS via Terraform, orchestrated with Apache Airflow, tested with dbt, monitored with Grafana, and shipped through a full CI/CD pipeline. Runs in the cloud, or fully locally with one command.*
 
 ![CI](https://github.com/HerrerAaron/PGPilot/actions/workflows/ci.yml/badge.svg)
-![CD](https://github.com/HerrerAaron/PGPilot/actions/workflows/cd.yml/badge.svg)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)
 ![Airflow](https://img.shields.io/badge/Apache_Airflow-3.3-017CEE?logo=apacheairflow&logoColor=white)
@@ -14,7 +13,7 @@
 ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-CI%2FCD-2088FF?logo=github-actions&logoColor=white)
 ![Grafana](https://img.shields.io/badge/Grafana-Dashboards-F46800?logo=grafana&logoColor=white)
 
-**[Live dbt Docs & Lineage Graph](https://herreraaron.github.io/PGPilot/)** — auto-published on every merge to `main`
+**[Live dbt Docs & Lineage Graph](https://herreraaron.github.io/PGPilot/)** — published via the project's CI/CD pipeline
 
 ## About
 
@@ -30,7 +29,7 @@ PGPilot is an end-to-end PostgreSQL operations platform built on 3.8M real NYC Y
 - Cut query latency **up to 5.5x** through targeted post-load indexing, measured with `EXPLAIN ANALYZE`
 - **13 automated data-quality tests** (uniqueness, referential integrity, accepted values, freshness) via dbt, gating every pipeline run
 - Verified disaster recovery **end-to-end**: table drop → restore → row/constraint parity confirmed
-- Real **CI/CD**: 3 independent CI checks on every push/PR, a 2-stage CD deploy on every merge to `main`, gated by branch protection
+- Real **CI/CD**: 3 independent CI checks on every push/PR, and a 2-stage CD pipeline (dbt deploy + docs publish) engineered and validated to run automatically on every merge to `main`, gated by branch protection
 - Production-shaped cloud infrastructure — AWS RDS + networking — provisioned from a **single Terraform apply**
 - A 5-panel Grafana dashboard and a live, auto-published documentation site, both fully **provisioned as code**
 - A **one-command, fully local** reproduction of the entire stack — zero AWS account required
@@ -100,7 +99,7 @@ graph TD
 
 **Cloud infrastructure (Terraform + AWS).** A single `terraform apply` provisions a production-shaped AWS RDS instance, VPC networking, and an SSL-enforcing parameter group, with cost/security tradeoffs made deliberately (see below).
 
-**CI/CD (GitHub Actions).** CI runs three independent checks — pipeline + dbt tests, Terraform validation, DAG import checks — against a disposable database on every push/PR. CD deploys dbt models to the live database and publishes a fresh dbt docs site to GitHub Pages on every merge to `main`, gated by required status checks and branch protection.
+**CI/CD (GitHub Actions).** CI runs three independent checks — pipeline + dbt tests, Terraform validation, DAG import checks — against a disposable database on every push/PR. CD deploys dbt models to the live database and publishes a fresh dbt docs site to GitHub Pages, engineered and validated to trigger automatically on every merge to `main`, gated by required status checks and branch protection. It's currently invoked manually (`workflow_dispatch`) since the RDS instance was torn down after the project reached completion — see [Engineering Tradeoffs](#engineering-tradeoffs--future-improvements).
 
 **Observability (Grafana + monitoring).** A 5-panel Grafana dashboard, provisioned entirely as code, visualizes database size, connections, query performance, and ingestion history. A separate Python monitor polls four health metrics every 15 minutes and sends threshold-based email alerts.
 
@@ -135,6 +134,7 @@ This version rebuilds the same operational goals around production-representativ
 
 ## Engineering Tradeoffs & Future Improvements
 
+- **CD is currently manually triggered, not automatic.** It was built and validated as genuine Continuous Deployment — firing automatically on every merge to `main`, deploying dbt models and republishing docs — before being switched to `workflow_dispatch` once the project reached completion and the RDS instance was destroyed to avoid ongoing cost. Re-provisioning RDS and reverting the trigger restores full automation in minutes.
 - **RDS is publicly accessible**, secured by password + enforced SSL rather than network isolation — a deliberate portfolio-scale simplification. Production would use a private subnet with a bastion host or VPN.
 - **Secrets live in gitignored Terraform state, not AWS Secrets Manager** — avoids a small recurring cost. `manage_master_user_password` would be the production-grade choice.
 - **Backup retention is a flat 7-day window**, not Grandfather-Father-Son tiering — sufficient at this data scale, not at production scale.
