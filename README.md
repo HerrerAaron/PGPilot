@@ -17,7 +17,7 @@
 
 ## About
 
-PGPilot is an end-to-end PostgreSQL operations platform built on 3.8M real NYC Yellow Taxi trip records. Data is ingested and validated, transformed and tested with dbt, orchestrated by Apache Airflow, deployed to AWS RDS via Terraform, monitored through Grafana, and shipped through a real CI/CD pipeline — all runnable locally with a single command, or in the cloud exactly as it would run in production. It was built to demonstrate the concepts a platform/DevOps role actually touches day to day: infrastructure as code, orchestration, observability, and automated deployment.
+PGPilot is an end-to-end data engineering and PostgreSQL operations platform built on 3.8M real NYC Yellow Taxi trip records. Data is ingested and validated, transformed and tested with dbt, orchestrated by Apache Airflow, deployed to AWS RDS via Terraform, monitored through Grafana, and shipped through a real CI/CD pipeline — all runnable locally with a single command, or in the cloud exactly as it would run in production. It was built to demonstrate the concepts a platform/DevOps role actually touches day to day: infrastructure as code, orchestration, observability, and automated deployment.
 
 ![PGPilot demo](images/demo.gif)
 
